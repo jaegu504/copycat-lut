@@ -81,6 +81,21 @@ export const BRANDS = [
 ];
 export const PROFILES = Object.fromEntries(BRANDS.flatMap(([brand, list]) => list.map(([id, name, curve, gamut]) => [id, { id, brand, name, curve, gamut }])));
 
+/** 'video' or 'full' for log footage, read from the frame itself: a log curve never goes below its own
+ *  black code, so dark pixels sitting under that code mean the file was stretched from video levels. */
+export function detectLevels(profileId, px, stride = 4) {
+  const p = PROFILES[profileId], c = p && p.curve && CURVES[p.curve];
+  if (!c) return null;
+  let lo = -0.2, hi = 0.6;
+  for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (c.decode(m) < 0) lo = m; else hi = m; }
+  const full = hi, video = (hi * 1023 - 64) / 876;
+  if (full - video < 0.02) return c.legal ? 'video' : 'full';
+  const n = Math.floor(px.length / stride), v = new Float32Array(n), k = px instanceof Uint8ClampedArray || px instanceof Uint8Array ? 1 / 255 : 1;
+  for (let i = 0; i < n; i++) v[i] = Math.min(px[i * stride], px[i * stride + 1], px[i * stride + 2]) * k;
+  v.sort();
+  return v[Math.floor(n * 0.002)] < video + 0.8 * (full - video) ? 'video' : 'full';
+}
+
 // ---------- transfer helpers ----------
 const oetf709 = L => L < 0.018 ? 4.5 * L : 1.099 * Math.pow(L, 0.45) - 0.099;
 export const srgbToLin = v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
@@ -165,13 +180,18 @@ function toneTable(src, ref) {
   const ps = Array.from({ length: 99 }, (_, i) => 0.005 + i * 0.99 / 98);
   const xs = quantiles(src, ps), ys = quantiles(ref, ps);
   const pts = [[0, Math.max(0, ys[0] - xs[0])]];
-  for (let i = 0; i < xs.length; i++) {
+  for (let i = 0; i < xs.length; i++) pts.push([xs[i], ys[i]]);
+  pts.push([1, Math.min(1, ys[ys.length - 1] + (1 - xs[xs.length - 1]))]);
+  return curveFrom(pts, xs[49]);
+}
+/** Monotone, slope-limited, smoothed table through (x, y) points, re-anchored at x = anchor. */
+function curveFrom(raw, anchor) {
+  const pts = [];
+  for (const [x, y] of raw) {
     const last = pts[pts.length - 1];
-    if (xs[i] - last[0] < 1e-3) { last[1] = (last[1] + ys[i]) / 2; continue; }
-    pts.push([xs[i], ys[i]]);
+    if (last && x - last[0] < 1e-3) { last[1] = (last[1] + y) / 2; continue; }
+    pts.push([x, y]);
   }
-  const lx = pts[pts.length - 1];
-  if (lx[0] < 1 - 1e-3) pts.push([1, Math.min(1, lx[1] + (1 - lx[0]))]);
   const T = new Float32Array(TN);
   let j = 0;
   for (let i = 0; i < TN; i++) {
@@ -180,7 +200,7 @@ function toneTable(src, ref) {
     const [x0, y0] = pts[j], [x1, y1] = pts[Math.min(j + 1, pts.length - 1)];
     T[i] = x1 > x0 ? y0 + (y1 - y0) * clamp((x - x0) / (x1 - x0), 0, 1) : y0;
   }
-  // Limit and smooth the slope so the curve never crushes or bands, then re-anchor at the median.
+  // Limit and smooth the slope so the curve never crushes or bands, then re-anchor.
   const dx = 1 / (TN - 1);
   let d = new Float32Array(TN - 1);
   for (let i = 0; i < TN - 1; i++) d[i] = clamp((T[i + 1] - T[i]) / dx, 0.3, 3);
@@ -192,7 +212,7 @@ function toneTable(src, ref) {
   const S = new Float32Array(TN);
   S[0] = T[0];
   for (let i = 1; i < TN; i++) S[i] = S[i - 1] + d[i - 1] * dx;
-  const m = Math.round(clamp(xs[49], 0, 1) * (TN - 1)), off = T[m] - S[m];
+  const m = Math.round(clamp(anchor, 0, 1) * (TN - 1)), off = T[m] - S[m];
   for (let i = 0; i < TN; i++) S[i] = clamp(S[i] + off, 0, 1);
   return S;
 }
@@ -241,19 +261,83 @@ function mkl(Cs, Cr, lo = 0.4, hi = 2.2) {
   return A;
 }
 
-/** Builds the look that moves `srcLab` (CST'd footage) toward `refLab`. */
-export function buildMatch(srcLab, refLab) {
-  const T = toneTable(srcLab, refLab);
+/** Builds the look that moves `srcLab` (CST'd footage) toward `refLab`.
+ *  'grade' (default) reads only what a grade does to any picture: black and white level, contrast,
+ *  the tint carried by near-neutral colours in shadows / mids / highlights, and overall saturation, so
+ *  the content of the reference (an orange wall, a green forest) does not leak into the footage.
+ *  'scene' matches the full distributions; use it only when both pictures show the same kind of scene. */
+export const MATCH = { bk: 0.04, wk: 0.094, mid: 0.565, cpow: 0.724, sig: 0.051, spow: 0.128, tint: 0.08, hmax: 0.121, hpow: 0.717 };
+export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
+  if (mode === 'scene') {
+    const T = toneTable(srcLab, refLab);
+    const mapL = L => lookupT(T, L);
+    const muS = zoneStats(srcLab, mapL), muR = zoneStats(refLab, null);
+    // A zone the reference barely has (e.g. no highlights) borrows the nearest populated zone.
+    const fill = mu => { const tot = mu.reduce((s, z) => s + z.n, 0); return mu.map((z, k) => z.n > tot * 0.02 ? z : (mu[1].n > tot * 0.02 ? mu[1] : mu[k === 0 ? 1 : 0])); };
+    const mS = fill(muS), mR = fill(muR);
+    const A = mkl(covAround(srcLab, mapL, mS), covAround(refLab, null, mR));
+    return { T, mS, mR, A };
+  }
+  const ps = [0.01, 0.25, 0.5, 0.75, 0.99], s = quantiles(srcLab, ps), r = quantiles(refLab, ps);
+  const b = s[0] + clamp(r[0] - s[0], -o.bk, o.bk), w = s[4] + clamp(r[4] - s[4], -o.wk, o.wk);
+  const m = s[2] + clamp(r[2] - s[2], -0.1, 0.1) * o.mid;
+  const c = clamp(Math.pow((r[3] - r[1]) / (s[3] - s[1] + 1e-4), o.cpow), 0.8, 1.25);
+  const q1 = Math.max(b + 0.01, m - (s[2] - s[1]) * c), q3 = Math.min(w - 0.01, m + (s[3] - s[2]) * c);
+  const T = curveFrom([[0, Math.max(0, b - s[0])], [s[0], b], [s[1], q1], [s[2], m], [s[3], q3], [s[4], w], [1, Math.min(1, w + (1 - s[4]))]], s[2]);
   const mapL = L => lookupT(T, L);
-  const muS = zoneStats(srcLab, mapL), muR = zoneStats(refLab, null);
-  // A zone the reference barely has (e.g. no highlights) borrows the nearest populated zone.
-  const fill = mu => { const tot = mu.reduce((s, z) => s + z.n, 0); return mu.map((z, k) => z.n > tot * 0.02 ? z : (mu[1].n > tot * 0.02 ? mu[1] : mu[k === 0 ? 1 : 0])); };
-  const mS = fill(muS), mR = fill(muR);
-  const A = mkl(covAround(srcLab, mapL, mS), covAround(refLab, null, mR));
-  return { T, mS, mR, A };
+  const nS = neutralStats(srcLab, mapL, o.sig), nR = neutralStats(refLab, null, o.sig);
+  // the reference's tint relative to the footage's, capped: a grade tints, it does not repaint
+  const mR = nR.map((z, k) => { const da = z.a - nS[k].a, db = z.b - nS[k].b, h = Math.hypot(da, db), k2 = h > o.tint ? o.tint / h : 1; return { a: nS[k].a + da * k2, b: nS[k].b + db * k2, n: z.n }; });
+  const sat = clamp(Math.pow((chromaQ(refLab, 0.75) + 1e-3) / (chromaQ(srcLab, 0.75) + 1e-3), o.spow), 0.7, 1.3);
+  return { T, mS: nS, mR, A: [sat, 0, sat], hue: hueSectors(srcLab, refLab, o) };
+}
+// Six hue sectors (red, orange/skin, yellow-green, green-cyan, blue, magenta): how the reference turns
+// each hue and how saturated it keeps it, from chroma-weighted means of the pixels in that sector.
+const SECT = 6;
+function sectorStats(lab) {
+  const st = Array.from({ length: SECT }, () => ({ x: 0, y: 0, c: 0, n: 0 }));
+  for (let i = 0; i < lab.length; i += 3) {
+    const a = lab[i + 1], b = lab[i + 2], C = Math.hypot(a, b);
+    if (C < 0.03 || lab[i] < 0.08 || lab[i] > 0.97) continue;
+    const h = (Math.atan2(b, a) + 2 * Math.PI) % (2 * Math.PI), k = Math.floor(h / (2 * Math.PI) * SECT) % SECT, z = st[k];
+    z.x += a; z.y += b; z.c += C; z.n++;
+  }
+  const tot = lab.length / 3;
+  return st.map(z => z.n > tot * 0.01 ? { h: Math.atan2(z.y, z.x), c: z.c / z.n, w: Math.min(1, z.n / (tot * 0.05)) } : null);
+}
+function hueSectors(srcLab, refLab, o) {
+  const S = sectorStats(srcLab), R = sectorStats(refLab);
+  return S.map((s, k) => {
+    const r = R[k];
+    if (!s || !r) return { dh: 0, ks: 1 };
+    const dh = Math.atan2(Math.sin(r.h - s.h), Math.cos(r.h - s.h)), w = Math.min(s.w, r.w);
+    return { dh: clamp(dh, -o.hmax, o.hmax) * w, ks: 1 + (clamp(Math.pow(r.c / s.c, o.hpow), 0.6, 1.5) - 1) * w };
+  });
+}
+function neutralStats(lab, mapL, sig) {
+  const sum = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], w = [0, 0, 0];
+  for (let i = 0; i < lab.length; i += 3) {
+    const L = mapL ? mapL(lab[i]) : lab[i];
+    if (L < 0.03 || L > 0.98) continue;
+    const g = Math.exp(-0.5 * (lab[i + 1] ** 2 + lab[i + 2] ** 2) / (sig * sig)) + 1e-4;
+    zoneW(L, w);
+    for (let k = 0; k < 3; k++) { const q = w[k] * g; sum[k][0] += q * lab[i + 1]; sum[k][1] += q * lab[i + 2]; sum[k][2] += q; }
+  }
+  const z = sum.map(([a, b, n]) => (n > 1e-6 ? { a: a / n, b: b / n, n } : null));
+  const any = z.find(Boolean) || { a: 0, b: 0, n: 0 };
+  return z.map((v, k) => v || z[1] || z[k ? k - 1 : 1] || any);
+}
+function chromaQ(lab, p) {
+  const n = lab.length / 3, c = new Float32Array(n);
+  for (let i = 0; i < n; i++) c[i] = Math.hypot(lab[i * 3 + 1], lab[i * 3 + 2]);
+  c.sort();
+  return c[Math.floor(p * (n - 1))];
 }
 
-export const DEFAULTS = { strength: 1, tone: 0.75, color: 0.8, sat: 0.7, skin: 0.5, temp: 0, tint: 0, saturation: 1, contrast: 0 };
+// Tuned on real S-Log3 footage against 13 colorist LUTs, checked on 11 others (see README).
+export const DEFAULTS = { strength: 1, tone: 0.82, color: 0.54, sat: 0.63, hue: 0.69, skin: 0.55, temp: 0, tint: 0, saturation: 1, contrast: 0 };
+/** Same-scene references: match everything. */
+export const DEFAULTS_SCENE = { ...DEFAULTS, tone: 1, color: 1, sat: 1, hue: 0, skin: 0.3 };
 const SKIN_H = 0.95; // Oklab hue (rad) of typical skin, ~54 deg
 
 /** Applies the look to one Oklab colour in place (o = [L,a,b]). */
@@ -270,6 +354,16 @@ export function applyLook(m, p, o) {
     const A00 = 1 + k * (m.A[0] - 1), A01 = k * m.A[1], A11 = 1 + k * (m.A[2] - 1);
     a = sa + p.color * (ra - sa) + A00 * ca + A01 * cb;
     b = sb + p.color * (rb - sb) + A01 * ca + A11 * cb;
+    if (m.hue && p.hue) {
+      const C = Math.hypot(a, b);
+      if (C > 1e-5) {
+        const h = (Math.atan2(b, a) + 2 * Math.PI) % (2 * Math.PI), f = h / (2 * Math.PI) * SECT - 0.5;
+        const k0 = ((Math.floor(f) % SECT) + SECT) % SECT, k1 = (k0 + 1) % SECT, t = f - Math.floor(f);
+        const dh = (m.hue[k0].dh * (1 - t) + m.hue[k1].dh * t) * p.hue, ks = 1 + ((m.hue[k0].ks * (1 - t) + m.hue[k1].ks * t) - 1) * p.hue;
+        const g = clamp(C / 0.04, 0, 1), h2 = h + dh * g, C2 = C * (1 + (ks - 1) * g);
+        a = C2 * Math.cos(h2); b = C2 * Math.sin(h2);
+      }
+    }
     // Skin protection: hold skin hues near where the camera put them.
     if (p.skin > 0) {
       const C = Math.hypot(a0, b0), h = Math.atan2(b0, a0), dh = Math.atan2(Math.sin(h - SKIN_H), Math.cos(h - SKIN_H));

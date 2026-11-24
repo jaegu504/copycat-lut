@@ -7,3 +7,18 @@ Open: https://jaegu504.github.io/copycat-lut/ (works on phones; add it to the ho
 - Camera log to Rec.709 conversion (Sony, Canon, Panasonic, Fujifilm, Nikon, ARRI, RED, Blackmagic, DJI, Apple Log, HLG).
 - Tone and colour matching in Oklab: histogram-matched tone curve, per-zone colour shift, MKL colour spread, skin protection.
 - Everything runs in the browser; no file leaves your device.
+
+## How it was tested
+
+Real Sony A7S III / FX3 S-Log3 footage (8 frames, different scenes) and 24 real colorist LOG LUTs.
+A LUT grades shot A to make the reference; the ground truth is the same LUT on shot B; CopyCat only sees
+shot B and the reference. Score: mean Oklab distance x100 to the ground truth (about 2 is barely visible).
+Defaults were tuned on 13 LUTs and checked on 11 others.
+
+| Reference shows | No grade (CST only) | Scene mode | Grade mode (default) |
+| --- | --- | --- | --- |
+| A different scene (held-out LUTs) | 7.39 | 13.04 | 5.60 |
+| The same scene | 6.74 | 1.09 | 3.41 |
+
+Pick "Adegan sama" only when the reference is the same location and light; otherwise keep "Adegan lain".
+The S-Log3 conversion lands within 3.0 of Sony's official S-Log3/S-Gamut3.Cine to Rec.709 LUT.

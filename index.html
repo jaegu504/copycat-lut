@@ -100,6 +100,7 @@ details .knobs { display: grid; gap: 6px; }
 .modes { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: transparent; padding: 7px 11px; cursor: pointer; color: var(--mute); font-size: 13px; }
+.seg.mode { width: 100%; } .seg.mode button { flex: 1; }
 .seg button[aria-pressed=true] { background: var(--fg); color: var(--accent-ink); font-weight: 600; }
 .readout { font: 500 12px/1.3 var(--mono); color: var(--mute); font-variant-numeric: tabular-nums; }
 
@@ -156,6 +157,7 @@ code { font: 12px var(--mono); background: var(--well); padding: 1px 4px; border
       <label class="f">Profil LOG &amp; gamut<select id="profile"></select></label>
       <div class="knob" id="expoWrap"><span>Eksposur CST</span><output id="expoOut">0.0 stop</output><input type="range" id="expo" min="-3" max="3" step="0.1" value="0"></div>
       <p class="hint" id="camHint"></p>
+      <p class="hint" id="lvFound"></p>
     </section>
 
     <section class="step" aria-labelledby="s3">
@@ -174,10 +176,16 @@ code { font: 12px var(--mono); background: var(--well); padding: 1px 4px; border
 
     <section class="step" aria-labelledby="s4">
       <h2 id="s4"><b>4</b> Cocokkan</h2>
+      <div class="seg mode" role="group" aria-label="Jenis referensi">
+        <button type="button" data-match="grade" aria-pressed="true">Adegan lain</button>
+        <button type="button" data-match="scene" aria-pressed="false">Adegan sama</button>
+      </div>
+      <p class="hint" id="modeHint"></p>
       <div class="knob"><span>Kekuatan look</span><output id="o-strength"></output><input type="range" id="strength" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Kecerahan &amp; kontras referensi</span><output id="o-tone"></output><input type="range" id="tone" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Warna per area (bayangan / tengah / terang)</span><output id="o-color"></output><input type="range" id="color" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Sebaran warna &amp; saturasi</span><output id="o-sat"></output><input type="range" id="sat" min="0" max="1" step="0.01"></div>
+      <div class="knob" id="hueWrap"><span>Rona per warna (hijau, oranye, biru…)</span><output id="o-hue"></output><input type="range" id="hue" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Lindungi warna kulit</span><output id="o-skin"></output><input type="range" id="skin" min="0" max="1" step="0.01"></div>
       <details>
         <summary>Penyesuaian akhir</summary>
@@ -262,11 +270,11 @@ const PREVIEW_W = Math.min(1280, Math.round(Math.min(screen.width, screen.height
 const state = {
   foot: null, footSmall: null, ref: null, refSmall: null,
   profile: 'slog3c', levels: 'auto', exposure: 0,
-  params: { ...E.DEFAULTS }, mode: 'split', splitX: 0.5,
+  params: { ...E.DEFAULTS }, matchMode: 'grade', mode: 'split', splitX: 0.5,
   match: null, cst: null, lutCst: null, lutLook: null,
   demo: true,
 };
-const KNOBS = ['strength', 'tone', 'color', 'sat', 'skin', 'temp', 'tint', 'saturation', 'contrast'];
+const KNOBS = ['strength', 'tone', 'color', 'sat', 'hue', 'skin', 'temp', 'tint', 'saturation', 'contrast'];
 const fmt = { temp: v => (v > 0 ? '+' : '') + Math.round(v * 100), tint: v => (v > 0 ? '+' : '') + Math.round(v * 100), saturation: v => Math.round(v * 100) + '%', contrast: v => (v > 0 ? '+' : '') + Math.round(v * 100) };
 const pct = v => Math.round(v * 100) + '%';
 
@@ -365,17 +373,36 @@ function bindKnobs() {
     out.textContent = (fmt[k] || pct)(+el.value);
     el.addEventListener('input', () => { state.params[k] = +el.value; out.textContent = (fmt[k] || pct)(+el.value); schedule(); });
   });
-  $('reset').addEventListener('click', () => { state.params = { ...E.DEFAULTS }; KNOBS.forEach(k => { $(k).value = state.params[k]; $('o-' + k).textContent = (fmt[k] || pct)(state.params[k]); }); schedule(); });
+  $('reset').addEventListener('click', () => { setParams(modeDefaults()); schedule(); });
+  document.querySelectorAll('.seg.mode button').forEach(b => b.addEventListener('click', () => {
+    state.matchMode = b.dataset.match;
+    document.querySelectorAll('.seg.mode button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    const keep = { strength: state.params.strength, temp: state.params.temp, tint: state.params.tint, saturation: state.params.saturation, contrast: state.params.contrast };
+    setParams({ ...modeDefaults(), ...keep });
+    modeHint(); analyse();
+  }));
+  modeHint();
+}
+const modeDefaults = () => ({ ...(state.matchMode === 'scene' ? E.DEFAULTS_SCENE : E.DEFAULTS) });
+function setParams(p) { state.params = p; KNOBS.forEach(k => { $(k).value = p[k]; $('o-' + k).textContent = (fmt[k] || pct)(p[k]); }); }
+function modeHint() {
+  const scene = state.matchMode === 'scene';
+  $('hueWrap').hidden = scene;
+  $('modeHint').textContent = scene
+    ? 'Referensi dari adegan yang sama (shot lain di lokasi dan cahaya yang sama, atau versi yang sudah di-grade). Semua warna dan kecerahan disamakan persis.'
+    : 'Referensi dari film atau foto lain. Hanya gaya grade yang diambil: hitam & putih, rona bayangan / tengah / terang, saturasi, dan rona per warna. Isi gambarnya tidak ikut.';
 }
 
 // ---------- analysis + render ----------
 let refLab = null, cstLab = null;
 function analyse() {
   if (!state.footSmall || !state.refSmall) return;
-  state.cst = E.makeCST(state.profile, { exposure: state.exposure, levels: state.levels });
+  const found = state.levels === 'auto' ? E.detectLevels(state.profile, state.footSmall.data) : null;
+  state.cst = E.makeCST(state.profile, { exposure: state.exposure, levels: found || state.levels });
+  $('lvFound').textContent = found ? `Data levels terdeteksi: ${found === 'full' ? 'Full' : 'Video (legal)'}. Kalau warnanya terlihat salah, pilih manual.` : '';
   cstLab = E.toLab(state.footSmall.data, 4, state.cst);
   refLab = E.toLab(state.refSmall.data, 4);
-  state.match = E.buildMatch(cstLab, refLab);
+  state.match = E.buildMatch(cstLab, refLab, state.matchMode);
   state.lutCst = E.bakeLUT(state.cst, 33);
   paintPalette('palRef', E.palette(refLab));
   paintPalette('palCst', E.palette(cstLab));
