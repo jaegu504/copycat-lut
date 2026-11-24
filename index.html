@@ -1,0 +1,509 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CopyCat LUT</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#1d1d1e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a grading bay. Controls in a left rack, the picture large on the right, scopes under it.
+   Deliberately one dark, near-neutral theme: colour is judged against grey, never against a tinted UI. */
+:root {
+  color-scheme: dark;
+  --bg: #1d1d1e;
+  --rack: #252527;
+  --well: #161617;
+  --line: #3a3a3d;
+  --fg: #ecebe8;
+  --mute: #aaa9a6;
+  --faint: #8f8e8b;
+  --accent: #d9a35f;      /* tungsten: the one warm mark in a grey room */
+  --accent-ink: #1d1d1e;
+  --ref: #7fb3d5;         /* reference trace on the scope */
+  --ok: #8fc79a;
+  --warn: #e0b25a;
+  --display: "Bricolage Grotesque", "Inter", system-ui, sans-serif;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r: 10px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { background: var(--bg); color: var(--fg); }
+body { font: 14px/1.5 var(--body); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 40px; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header.top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding-block: 18px 16px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+header.top h1 { font: 700 26px/1 var(--display); letter-spacing: -0.01em; margin: 0; }
+header.top h1 span { color: var(--accent); }
+header.top p { margin: 0; color: var(--mute); max-width: 62ch; }
+
+.bay { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .bay { grid-template-columns: minmax(0, 1fr); } .stage { order: -1; } }
+
+.rack { display: grid; gap: 12px; }
+.step { background: var(--rack); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; display: grid; gap: 10px; min-width: 0; }
+.step h2 { font: 600 13px/1 var(--body); text-transform: uppercase; letter-spacing: 0.08em; color: var(--mute); margin: 0; display: flex; align-items: center; gap: 8px; }
+.step h2 b { font: 500 12px/1 var(--mono); color: var(--accent-ink); background: var(--accent); border-radius: 4px; padding: 3px 5px; }
+.hint { color: var(--mute); font-size: 12.5px; margin: 0; }
+.hint.warn { color: var(--warn); }
+
+.drop { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px; cursor: pointer; min-width: 0; }
+.drop:hover, .drop.over { border-color: var(--accent); }
+.drop canvas { width: 72px; height: 44px; border-radius: 4px; background: var(--well); flex: none; object-fit: cover; }
+.drop .t { min-width: 0; }
+.drop .t strong { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drop .t span { color: var(--mute); font-size: 12px; }
+.drop input { display: none; }
+.tag { font: 500 10.5px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); border: 1px solid currentColor; border-radius: 3px; padding: 2px 4px; margin-left: 4px; vertical-align: 1px; }
+
+.scrub { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+label.f { display: grid; gap: 4px; font-size: 12.5px; color: var(--mute); }
+select, input[type=text] { width: 100%; background: var(--well); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; color: var(--fg); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+.knob { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; }
+.knob span { font-size: 13px; }
+.knob output { font: 500 12px/1 var(--mono); color: var(--mute); font-variant-numeric: tabular-nums; min-width: 4.5ch; text-align: right; }
+.knob input { grid-column: 1 / -1; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; cursor: pointer; }
+input[type=range]::-webkit-slider-runnable-track { height: 3px; background: var(--line); border-radius: 2px; }
+input[type=range]::-moz-range-track { height: 3px; background: var(--line); border-radius: 2px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); margin-top: -5.5px; border: 2px solid var(--rack); }
+input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--fg); border: 2px solid var(--rack); }
+details summary { cursor: pointer; color: var(--mute); font-size: 12.5px; }
+details[open] summary { margin-bottom: 8px; }
+details .knobs { display: grid; gap: 6px; }
+
+.btn { border: 1px solid var(--line); background: var(--well); border-radius: 8px; padding: 9px 12px; cursor: pointer; font-weight: 500; }
+.btn:hover { border-color: var(--mute); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.status { font-size: 12.5px; color: var(--ok); min-height: 1.5em; margin: 0; }
+
+.stage { display: grid; gap: 12px; min-width: 0; }
+.viewer { position: relative; background: var(--well); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; touch-action: pan-y; }
+.viewer canvas { display: block; width: 100%; height: auto; max-width: 100%; }
+.viewer .split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1.5px solid rgba(255,255,255,.85); pointer-events: none; }
+.viewer .grip { position: absolute; top: 50%; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; background: var(--fg); color: var(--accent-ink); display: grid; place-items: center; font: 600 12px/1 var(--mono); pointer-events: none; box-shadow: 0 1px 6px rgba(0,0,0,.4); }
+.viewer .lbl { position: absolute; top: 10px; font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; background: rgba(0,0,0,.55); color: #f0efec; padding: 5px 7px; border-radius: 4px; pointer-events: none; }
+.viewer .lbl.l { left: 10px; } .viewer .lbl.r { right: 10px; }
+.viewer .busy { position: absolute; inset: auto 10px 10px auto; font: 500 11px/1 var(--mono); color: var(--mute); }
+
+.modes { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 7px 11px; cursor: pointer; color: var(--mute); font-size: 13px; }
+.seg button[aria-pressed=true] { background: var(--fg); color: var(--accent-ink); font-weight: 600; }
+.readout { font: 500 12px/1.3 var(--mono); color: var(--mute); font-variant-numeric: tabular-nums; }
+
+.scopes { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(200px, 240px); gap: 12px; }
+@media (max-width: 1100px) { .scopes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .scopes .vs { grid-column: 1 / -1; justify-self: center; width: min(100%, 300px); } }
+@media (max-width: 560px) { .scopes { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--rack); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.panel h3 { margin: 0; font: 600 12px/1 var(--body); text-transform: uppercase; letter-spacing: .08em; color: var(--mute); display: flex; justify-content: space-between; gap: 8px; }
+.panel h3 em { font: 400 11px/1 var(--mono); font-style: normal; text-transform: none; letter-spacing: 0; color: var(--faint); }
+.panel canvas.ref { width: 100%; height: auto; border-radius: 6px; background: var(--well); display: block; }
+.pal { display: flex; height: 34px; border-radius: 6px; overflow: hidden; }
+.pal i { display: block; height: 100%; }
+.pal-l { font: 400 11px/1 var(--mono); color: var(--faint); }
+canvas.scope { width: 100%; aspect-ratio: 1; max-width: 100%; border-radius: 50%; background: var(--well); display: block; }
+.legend { display: flex; gap: 12px; font-size: 11.5px; color: var(--mute); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+
+.howto { background: var(--rack); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; display: grid; gap: 10px; }
+.howto h3 { margin: 0; font: 700 17px/1.2 var(--display); }
+.howto .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+.howto h4 { margin: 0 0 4px; font-size: 13px; }
+.howto ol { margin: 0; padding-left: 18px; color: var(--mute); font-size: 13px; display: grid; gap: 3px; }
+code { font: 12px var(--mono); background: var(--well); padding: 1px 4px; border-radius: 3px; color: var(--fg); }
+
+@media (prefers-reduced-motion: no-preference) { .btn, .drop, .seg button { transition: border-color .15s, background-color .15s, filter .15s; } }
+</style>
+
+<header class="top">
+  <h1>CopyCat <span>LUT</span></h1>
+  <p>Tiru warna dari sebuah foto atau still film ke footage kamu, lalu bawa hasilnya sebagai file <code>.cube</code> ke CapCut, Concat, Premiere atau Resolve.</p>
+</header>
+
+<div class="bay">
+  <aside class="rack">
+    <section class="step" aria-labelledby="s1">
+      <h2 id="s1"><b>1</b> Footage kamu</h2>
+      <label class="drop" id="dropFoot">
+        <canvas id="thumbFoot" width="144" height="88"></canvas>
+        <span class="t"><strong id="nameFoot">Contoh: S-Log3 <span class="tag">contoh</span></strong><span>Klik atau tarik video / screenshot frame ke sini</span></span>
+        <input type="file" id="fileFoot" accept="image/*,video/*">
+      </label>
+      <div class="scrub" id="scrubFoot" hidden>
+        <input type="range" id="seekFoot" min="0" max="1000" value="200" aria-label="Posisi frame">
+        <span class="readout" id="timeFoot">0:00</span>
+      </div>
+    </section>
+
+    <section class="step" aria-labelledby="s2">
+      <h2 id="s2"><b>2</b> Kamera &amp; profil</h2>
+      <div class="row2">
+        <label class="f">Merek<select id="brand"></select></label>
+        <label class="f">Data levels<select id="levels"><option value="auto">Otomatis</option><option value="video">Video (legal)</option><option value="full">Full</option></select></label>
+      </div>
+      <label class="f">Profil LOG &amp; gamut<select id="profile"></select></label>
+      <div class="knob" id="expoWrap"><span>Eksposur CST</span><output id="expoOut">0.0 stop</output><input type="range" id="expo" min="-3" max="3" step="0.1" value="0"></div>
+      <p class="hint" id="camHint"></p>
+    </section>
+
+    <section class="step" aria-labelledby="s3">
+      <h2 id="s3"><b>3</b> Referensi warna</h2>
+      <label class="drop" id="dropRef">
+        <canvas id="thumbRef" width="144" height="88"></canvas>
+        <span class="t"><strong id="nameRef">Contoh: teal &amp; hangat <span class="tag">contoh</span></strong><span>Screenshot film, still, atau foto (JPEG/PNG)</span></span>
+        <input type="file" id="fileRef" accept="image/*,video/*">
+      </label>
+      <div class="scrub" id="scrubRef" hidden>
+        <input type="range" id="seekRef" min="0" max="1000" value="200" aria-label="Posisi frame referensi">
+        <span class="readout" id="timeRef">0:00</span>
+      </div>
+      <p class="hint">Pilih referensi yang suasananya mirip (siang dengan siang, malam dengan malam). Isinya tidak harus sama.</p>
+    </section>
+
+    <section class="step" aria-labelledby="s4">
+      <h2 id="s4"><b>4</b> Cocokkan</h2>
+      <div class="knob"><span>Kekuatan look</span><output id="o-strength"></output><input type="range" id="strength" min="0" max="1" step="0.01"></div>
+      <div class="knob"><span>Kecerahan &amp; kontras referensi</span><output id="o-tone"></output><input type="range" id="tone" min="0" max="1" step="0.01"></div>
+      <div class="knob"><span>Warna per area (bayangan / tengah / terang)</span><output id="o-color"></output><input type="range" id="color" min="0" max="1" step="0.01"></div>
+      <div class="knob"><span>Sebaran warna &amp; saturasi</span><output id="o-sat"></output><input type="range" id="sat" min="0" max="1" step="0.01"></div>
+      <div class="knob"><span>Lindungi warna kulit</span><output id="o-skin"></output><input type="range" id="skin" min="0" max="1" step="0.01"></div>
+      <details>
+        <summary>Penyesuaian akhir</summary>
+        <div class="knobs">
+          <div class="knob"><span>Temperatur</span><output id="o-temp"></output><input type="range" id="temp" min="-1" max="1" step="0.01"></div>
+          <div class="knob"><span>Tint</span><output id="o-tint"></output><input type="range" id="tint" min="-1" max="1" step="0.01"></div>
+          <div class="knob"><span>Saturasi</span><output id="o-saturation"></output><input type="range" id="saturation" min="0" max="2" step="0.01"></div>
+          <div class="knob"><span>Kontras</span><output id="o-contrast"></output><input type="range" id="contrast" min="-0.5" max="0.5" step="0.01"></div>
+          <button class="btn" id="reset" type="button">Kembalikan ke awal</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="step" aria-labelledby="s5">
+      <h2 id="s5"><b>5</b> Ekspor LUT</h2>
+      <div class="row2">
+        <label class="f">Nama look<input type="text" id="lutName" value="CopyCat Look" maxlength="60"></label>
+        <label class="f">Ukuran<select id="lutSize"><option value="17">17³ (ringan)</option><option value="33" selected>33³ (standar)</option><option value="65">65³ (halus)</option></select></label>
+      </div>
+      <label class="f"><span><input type="checkbox" id="withCst" checked> LUT sudah termasuk konversi LOG → Rec.709</span></label>
+      <div class="btns">
+        <button class="btn primary" id="download" type="button">Unduh .cube</button>
+        <button class="btn" id="copy" type="button">Salin teks .cube</button>
+      </div>
+      <p class="status" id="status" role="status"></p>
+    </section>
+  </aside>
+
+  <main class="stage">
+    <div class="modes">
+      <div class="seg" role="group" aria-label="Tampilan">
+        <button type="button" data-mode="split" aria-pressed="true">Banding</button>
+        <button type="button" data-mode="orig" aria-pressed="false">LOG asli</button>
+        <button type="button" data-mode="cst" aria-pressed="false">CST saja</button>
+        <button type="button" data-mode="look" aria-pressed="false">Hasil</button>
+      </div>
+      <span class="readout" id="readout"></span>
+    </div>
+    <div class="viewer" id="viewer">
+      <canvas id="view" width="960" height="540"></canvas>
+      <div class="split" id="splitLine"><div class="grip">⇆</div></div>
+      <span class="lbl l" id="lblL">CST saja</span><span class="lbl r" id="lblR">Hasil</span>
+      <span class="busy" id="busy"></span>
+    </div>
+
+    <div class="scopes">
+      <div class="panel">
+        <h3>Referensi <em id="refDim"></em></h3>
+        <canvas class="ref" id="refView" width="480" height="270"></canvas>
+      </div>
+      <div class="panel">
+        <h3>Palet warna</h3>
+        <span class="pal-l">Referensi</span><div class="pal" id="palRef"></div>
+        <span class="pal-l">Hasil</span><div class="pal" id="palOut"></div>
+        <span class="pal-l">Footage setelah CST</span><div class="pal" id="palCst"></div>
+      </div>
+      <div class="panel vs">
+        <h3>Vectorscope <em>Oklab a·b</em></h3>
+        <canvas class="scope" id="scope" width="480" height="480"></canvas>
+        <div class="legend"><span><i style="background:var(--ref)"></i>Referensi</span><span><i style="background:var(--fg)"></i>Hasil</span><span><i style="background:var(--accent)"></i>Garis kulit</span></div>
+      </div>
+    </div>
+
+    <section class="howto">
+      <h3>Memakai file .cube</h3>
+      <div class="cols">
+        <div><h4>CapCut (desktop)</h4><ol><li>Pilih klip, buka <b>Adjust</b> → <b>LUT</b>.</li><li>Klik <b>Import LUT</b>, pilih file <code>.cube</code>.</li><li>Atur <b>Intensity</b> sesuai selera.</li></ol></div>
+        <div><h4>Concat</h4><ol><li>Impor <code>.cube</code> sebagai look (masuk kategori <b>Imported</b>).</li><li>Taruh look di klip dan atur intensitasnya.</li></ol></div>
+        <div><h4>Resolve / Premiere</h4><ol><li>Kalau sudah pakai CST sendiri, matikan pilihan "termasuk konversi LOG" lalu ekspor ulang.</li><li>Pasang LUT setelah node / efek CST.</li></ol></div>
+      </div>
+      <p class="hint">LUT diterapkan pada footage seperti yang direkam. Kalau aplikasi sudah mengubah LOG ke Rec.709 sendiri, jangan pakai LUT yang sudah termasuk konversi, nanti konversinya jadi dua kali.</p>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import * as E from './engine.js';
+
+const $ = id => document.getElementById(id);
+// phones: preview no wider than the screen's real pixels, so sliders stay smooth
+const PREVIEW_W = Math.min(1280, Math.round(Math.min(screen.width, screen.height) > 600 ? 1280 : screen.width * Math.min(devicePixelRatio || 1, 2))), ANALYSIS_W = 256, SCOPE_N = 6000;
+const state = {
+  foot: null, footSmall: null, ref: null, refSmall: null,
+  profile: 'slog3c', levels: 'auto', exposure: 0,
+  params: { ...E.DEFAULTS }, mode: 'split', splitX: 0.5,
+  match: null, cst: null, lutCst: null, lutLook: null,
+  demo: true,
+};
+const KNOBS = ['strength', 'tone', 'color', 'sat', 'skin', 'temp', 'tint', 'saturation', 'contrast'];
+const fmt = { temp: v => (v > 0 ? '+' : '') + Math.round(v * 100), tint: v => (v > 0 ? '+' : '') + Math.round(v * 100), saturation: v => Math.round(v * 100) + '%', contrast: v => (v > 0 ? '+' : '') + Math.round(v * 100) };
+const pct = v => Math.round(v * 100) + '%';
+
+// ---------- image plumbing ----------
+function canvasOf(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function grab(src, sw, sh, maxW) {
+  const s = Math.min(1, maxW / sw), w = Math.max(1, Math.round(sw * s)), h = Math.max(1, Math.round(sh * s));
+  const c = canvasOf(w, h), g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(src, 0, 0, w, h);
+  return g.getImageData(0, 0, w, h);
+}
+function fromBytes(bytes, w, h) { return new ImageData(bytes, w, h); }
+function drawThumb(canvas, img) {
+  const g = canvas.getContext('2d'), c = canvasOf(img.width, img.height);
+  c.getContext('2d').putImageData(img, 0, 0);
+  const s = Math.max(canvas.width / img.width, canvas.height / img.height);
+  g.drawImage(c, (canvas.width - img.width * s) / 2, (canvas.height - img.height * s) / 2, img.width * s, img.height * s);
+}
+
+// One loader for both inputs: images directly, videos through a hidden <video> and a frame scrubber.
+function makeLoader(kind) {
+  const video = document.createElement('video');
+  video.muted = true; video.playsInline = true; video.preload = 'auto';
+  let url = null;
+  const seek = $(kind === 'foot' ? 'seekFoot' : 'seekRef'), scrub = $(kind === 'foot' ? 'scrubFoot' : 'scrubRef');
+  const time = $(kind === 'foot' ? 'timeFoot' : 'timeRef'), name = $(kind === 'foot' ? 'nameFoot' : 'nameRef');
+  const setFrom = (src, w, h) => {
+    const big = grab(src, w, h, PREVIEW_W), small = grab(src, w, h, ANALYSIS_W);
+    if (kind === 'foot') { state.foot = big; state.footSmall = small; } else { state.ref = big; state.refSmall = small; }
+    drawThumb($(kind === 'foot' ? 'thumbFoot' : 'thumbRef'), small);
+    analyse();
+  };
+  const mmss = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  video.addEventListener('seeked', () => { time.textContent = mmss(video.currentTime); setFrom(video, video.videoWidth, video.videoHeight); });
+  seek.addEventListener('input', () => { if (video.duration) video.currentTime = seek.value / 1000 * video.duration; });
+  async function load(file) {
+    if (!file) return;
+    name.textContent = file.name;
+    if (kind === 'foot') state.demo = false;
+    if (file.type.startsWith('video/')) {
+      if (url) URL.revokeObjectURL(url);
+      url = URL.createObjectURL(file);
+      video.src = url;
+      try {
+        await new Promise((ok, bad) => { video.onloadedmetadata = ok; video.onerror = () => bad(new Error('video')); });
+      } catch { say('Browser ini tidak bisa membuka video itu. Coba ambil screenshot frame-nya (PNG) lalu muat gambarnya.', true); return; }
+      scrub.hidden = false;
+      video.currentTime = seek.value / 1000 * video.duration;
+    } else {
+      scrub.hidden = true;
+      try { const bmp = await createImageBitmap(file); setFrom(bmp, bmp.width, bmp.height); bmp.close?.(); }
+      catch { say('Gambar tidak bisa dibaca. Pakai JPEG atau PNG.', true); }
+    }
+  }
+  const input = $(kind === 'foot' ? 'fileFoot' : 'fileRef'), drop = $(kind === 'foot' ? 'dropFoot' : 'dropRef');
+  input.addEventListener('change', () => load(input.files[0]));
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); load(e.dataTransfer.files[0]); });
+}
+
+// ---------- camera controls ----------
+function fillBrands() {
+  const b = $('brand');
+  E.BRANDS.forEach(([name]) => b.add(new Option(name, name)));
+  b.value = E.PROFILES[state.profile].brand;
+  b.addEventListener('change', () => { fillProfiles(); state.profile = $('profile').value; cameraChanged(); });
+  $('profile').addEventListener('change', () => { state.profile = $('profile').value; cameraChanged(); });
+  $('levels').addEventListener('change', () => { state.levels = $('levels').value; cameraChanged(); });
+  $('expo').addEventListener('input', () => { state.exposure = +$('expo').value; $('expoOut').textContent = (state.exposure > 0 ? '+' : '') + state.exposure.toFixed(1) + ' stop'; cameraChanged(); });
+  fillProfiles();
+  $('profile').value = state.profile;
+}
+function fillProfiles() {
+  const p = $('profile'); p.length = 0;
+  E.BRANDS.find(([n]) => n === $('brand').value)[1].forEach(([id, name]) => p.add(new Option(name, id)));
+}
+const HINTS = {
+  rec709: 'Untuk video biasa, foto, atau video HDR ponsel yang sudah tampil normal di layar.',
+  hlg: 'HLG: pilih ini hanya kalau frame-nya terlihat pucat dan datar. Kalau sudah tampil normal, pilih "Tidak LOG".',
+  applelog: 'Apple Log: kalau hasil terlalu gelap atau terang, coba ganti Data levels.',
+  nlog: 'N-Log: kalau abu-abu tengah meleset, coba ganti Data levels.',
+};
+function cameraChanged() {
+  const p = E.PROFILES[state.profile];
+  $('expoWrap').hidden = !p.curve;
+  $('camHint').textContent = HINTS[p.curve || 'rec709'] || `Konversi warna: ${p.name} → Rec.709 dengan roll-off highlight lembut, seperti CST di Resolve.`;
+  analyse();
+}
+
+// ---------- knobs ----------
+function bindKnobs() {
+  KNOBS.forEach(k => {
+    const el = $(k), out = $('o-' + k);
+    el.value = state.params[k];
+    out.textContent = (fmt[k] || pct)(+el.value);
+    el.addEventListener('input', () => { state.params[k] = +el.value; out.textContent = (fmt[k] || pct)(+el.value); schedule(); });
+  });
+  $('reset').addEventListener('click', () => { state.params = { ...E.DEFAULTS }; KNOBS.forEach(k => { $(k).value = state.params[k]; $('o-' + k).textContent = (fmt[k] || pct)(state.params[k]); }); schedule(); });
+}
+
+// ---------- analysis + render ----------
+let refLab = null, cstLab = null;
+function analyse() {
+  if (!state.footSmall || !state.refSmall) return;
+  state.cst = E.makeCST(state.profile, { exposure: state.exposure, levels: state.levels });
+  cstLab = E.toLab(state.footSmall.data, 4, state.cst);
+  refLab = E.toLab(state.refSmall.data, 4);
+  state.match = E.buildMatch(cstLab, refLab);
+  state.lutCst = E.bakeLUT(state.cst, 33);
+  paintPalette('palRef', E.palette(refLab));
+  paintPalette('palCst', E.palette(cstLab));
+  drawRef();
+  schedule();
+}
+let pending = 0;
+function schedule() { if (!pending) pending = requestAnimationFrame(() => { pending = 0; render(); }); }
+
+const view = $('view'), vctx = view.getContext('2d');
+let outCst = null, outLook = null;
+function render() {
+  if (!state.foot || !state.match) return;
+  const t0 = performance.now();
+  const f = state.foot;
+  if (view.width !== f.width || view.height !== f.height) { view.width = f.width; view.height = f.height; }
+  state.lutLook = E.bakeLUT(E.makePipeline(state.cst, state.match, state.params), 33);
+  outCst = fromBytes(E.applyLUT(state.lutCst, 33, f.data, new Uint8ClampedArray(f.data.length)), f.width, f.height);
+  outLook = fromBytes(E.applyLUT(state.lutLook, 33, f.data, new Uint8ClampedArray(f.data.length)), f.width, f.height);
+  paintView();
+  const small = E.applyLUT(state.lutLook, 33, state.footSmall.data, new Uint8ClampedArray(state.footSmall.data.length));
+  const outLab = E.toLab(small, 4);
+  paintPalette('palOut', E.palette(outLab));
+  drawScope(outLab);
+  $('readout').textContent = `${f.width}×${f.height} · ${E.PROFILES[state.profile].name.split(' /')[0]} · ${Math.round(performance.now() - t0)} ms`;
+}
+function paintView() {
+  if (!outLook) return;
+  const m = state.mode, w = view.width, h = view.height;
+  const left = m === 'split' ? outCst : m === 'orig' ? state.foot : m === 'cst' ? outCst : outLook;
+  vctx.putImageData(left, 0, 0);
+  if (m === 'split') {
+    const x = Math.round(state.splitX * w);
+    vctx.putImageData(outLook, 0, 0, x, 0, w - x, h);
+  }
+  const split = m === 'split';
+  $('splitLine').hidden = !split;
+  $('splitLine').style.left = (state.splitX * 100) + '%';
+  $('lblL').textContent = { split: 'CST saja', orig: 'LOG asli', cst: 'CST saja', look: 'Hasil' }[m];
+  $('lblR').hidden = !split;
+}
+function paintPalette(id, pal) {
+  const el = $(id); el.replaceChildren();
+  pal.forEach(c => { const i = document.createElement('i'); i.style.background = E.labToCss(c); i.style.flex = String(c.share); i.title = E.labToCss(c); el.append(i); });
+}
+function drawRef() {
+  const c = $('refView'), img = state.ref;
+  c.width = img.width; c.height = img.height;
+  c.getContext('2d').putImageData(img, 0, 0);
+  $('refDim').textContent = `${img.width}×${img.height}`;
+}
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function drawScope(outLab) {
+  const c = $('scope'), g = c.getContext('2d'), S = c.width, R = S / 2, k = R / 0.28;
+  g.clearRect(0, 0, S, S);
+  g.strokeStyle = css('--line'); g.lineWidth = 1;
+  [0.07, 0.14, 0.21].forEach(r => { g.beginPath(); g.arc(R, R, r * k, 0, Math.PI * 2); g.stroke(); });
+  g.beginPath(); g.moveTo(R, 6); g.lineTo(R, S - 6); g.moveTo(6, R); g.lineTo(S - 6, R); g.stroke();
+  // skin line: the hue the skin guard holds
+  g.strokeStyle = css('--accent'); g.lineWidth = 2; g.beginPath(); g.moveTo(R, R);
+  g.lineTo(R + Math.cos(0.95) * 0.26 * k, R - Math.sin(0.95) * 0.26 * k); g.stroke();
+  const plot = (lab, color, alpha) => {
+    g.fillStyle = color; g.globalAlpha = alpha;
+    const n = lab.length / 3, step = Math.max(1, Math.floor(n / SCOPE_N));
+    for (let i = 0; i < n; i += step) g.fillRect(R + lab[i * 3 + 1] * k - 1, R - lab[i * 3 + 2] * k - 1, 2, 2);
+    g.globalAlpha = 1;
+  };
+  plot(refLab, css('--ref'), 0.18);
+  plot(outLab, css('--fg'), 0.22);
+}
+
+// viewer split drag
+(() => {
+  const v = $('viewer');
+  const move = e => { const r = v.getBoundingClientRect(); state.splitX = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); paintView(); };
+  v.addEventListener('pointerdown', e => { if (state.mode !== 'split') return; v.setPointerCapture(e.pointerId); move(e); v.onpointermove = move; });
+  v.addEventListener('pointerup', () => { v.onpointermove = null; });
+  document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
+    state.mode = b.dataset.mode;
+    document.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    paintView();
+  }));
+})();
+
+// ---------- export ----------
+function say(msg, warn = false) { const s = $('status'); s.textContent = msg; s.style.color = warn ? 'var(--warn)' : 'var(--ok)'; }
+function cube() {
+  const size = +$('lutSize').value, cst = $('withCst').checked ? state.cst : E.makeCST('rec709');
+  // Without the conversion the look is measured on Rec.709 pictures, so feed it 709 input as-is.
+  const lut = E.bakeLUT(E.makePipeline(cst, state.match, state.params), size);
+  const name = ($('lutName').value.trim() || 'CopyCat Look').replace(/[\\/:*?"<>|]/g, '');
+  return { name, text: E.cubeText(lut, size, name) };
+}
+let downloads = null;
+(async () => { try { downloads = window.claude?.use ? await window.claude.use('downloads') : null; } catch { downloads = null; } })();
+$('download').addEventListener('click', async () => {
+  if (!state.match) return;
+  const { name, text } = cube();
+  if (downloads) {
+    try { await downloads.save({ filename: name + '.zip', data: E.zipOne(name + '.cube', text) }); say(`Tersimpan: ${name}.zip (isinya ${name}.cube, ekstrak dulu).`); }
+    catch (e) { say(e?.code === 'declined' ? 'Unduhan dibatalkan.' : 'Unduhan tidak bisa di sini. Pakai "Salin teks .cube".', true); }
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = name + '.cube'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  say(`Diunduh: ${name}.cube`);
+});
+$('copy').addEventListener('click', async () => {
+  if (!state.match) return;
+  const { name, text } = cube();
+  try { await navigator.clipboard.writeText(text); say(`Teks ${name}.cube tersalin. Tempel ke file teks dan simpan dengan akhiran .cube.`); }
+  catch { say('Browser menolak menyalin. Pakai tombol Unduh.', true); }
+});
+$('withCst').addEventListener('change', () => say($('withCst').checked ? '' : 'LUT tanpa konversi: pasang setelah CST / konversi LOG milik aplikasimu.'));
+
+// Offline install on a real web host (not inside a sandboxed frame or file://).
+if ('serviceWorker' in navigator && location.protocol === 'https:' && window.top === window) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// ---------- start with the example ----------
+fillBrands(); bindKnobs(); makeLoader('foot'); makeLoader('ref');
+(() => {
+  const w = 960, h = 540, { foot, ref } = E.demoFrames(w, h);
+  const small = (bytes) => { const c = canvasOf(w, h); c.getContext('2d').putImageData(fromBytes(bytes, w, h), 0, 0); return grab(c, w, h, ANALYSIS_W); };
+  state.foot = fromBytes(foot, w, h); state.footSmall = small(foot);
+  state.ref = fromBytes(ref, w, h); state.refSmall = small(ref);
+  drawThumb($('thumbFoot'), state.footSmall); drawThumb($('thumbRef'), state.refSmall);
+  cameraChanged();
+})();
+</script>
