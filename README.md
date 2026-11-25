@@ -18,6 +18,11 @@ lightness zone (a look that turns bright greens yellow and dark greens teal keep
 mostly neutral pixels, and the midtones moved up to 0.2 toward the reference. Whites barely drop, so a
 reference without bright objects does not turn white shirts grey.
 
+On top, a palette warp pairs the footage's 13 main colours with the reference's 13 and moves each
+footage colour toward its partner (smoothly in between, less when the pair is far apart, black and white
+fixed). That copies looks with many colour families, such as teal metal, amber coat and cream highlights
+in one frame, which three tints and six hue sectors cannot.
+
 The cost: when a reference is darker only because of what is in it, the mid shift copies that darkness.
 On the held-out colorist-LUT test below that scores worse than no grade; the "Kecerahan & kontras referensi" slider at 50% brings
 it back (6.82).

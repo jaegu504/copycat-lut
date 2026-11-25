@@ -277,7 +277,7 @@ function mkl(Cs, Cr, lo = 0.4, hi = 2.2) {
  *  'scene' matches the full distributions; use it only when both pictures show the same kind of scene. */
 // Tuned to look like the reference (users judge by eye), not only to the colorist-LUT bench:
 // the mid shift (mclip) costs bench score when the reference is darker by content; lower `tone` for that.
-export const MATCH = { bk: 0.04, wk: 0.094, wdn: 0.02, mid: 1, mclip: 0.2, cpow: 0.724, cmax: 1.4, sig: 0.03, spow: 1, smin: 0.5, smax: 1.8, tint: 0.2, hmax: 0.4, hpow: 1 };
+export const MATCH = { bk: 0.04, wk: 0.094, wdn: 0.02, mid: 1, mclip: 0.2, cpow: 0.724, cmax: 1.4, sig: 0.03, spow: 1, smin: 0.5, smax: 1.8, tint: 0.2, hmax: 0.4, hpow: 1, pal: 1, pL: 0.5, pLm: 0.3, pd: 0.12, psig: 0.05 };
 export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   if (mode === 'scene') {
     const T = toneTable(srcLab, refLab);
@@ -302,7 +302,25 @@ export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   // the reference's tint relative to the footage's, capped: a grade tints, it does not repaint
   const mR = nR.map((z, k) => { const da = z.a - nS[k].a, db = z.b - nS[k].b, h = Math.hypot(da, db), k2 = h > o.tint ? o.tint / h : 1; return { a: nS[k].a + da * k2, b: nS[k].b + db * k2, n: z.n }; });
   const sat = clamp(Math.pow((chromaQ(refLab, 0.75) + 1e-3) / (chromaQ(srcLab, 0.75) + 1e-3), o.spow), o.smin ?? 0.7, o.smax ?? 1.3);
-  return { T, mS: nS, mR, A: [sat, 0, sat], hue: hueSectors(srcLab, refLab, mapL, o) };
+  const look = { T, mS: nS, mR, A: [sat, 0, sat], hue: hueSectors(srcLab, refLab, mapL, o) };
+  if (o.pal) look.pal = paletteWarp(srcLab, refLab, look, o);
+  return look;
+}
+// Palette warp: after the base look, the footage's palette (up to 13 colours) is paired with the
+// reference's, and each footage colour moves toward its partner. Pairs that are far apart move less,
+// so a colour the reference does not have is nudged, not repainted. Black and white stay put.
+function paletteWarp(srcLab, refLab, m, o) {
+  const base = new Float32Array(srcLab.length), u = [0, 0, 0], p = { ...DEFAULTS, skin: 0, pal: 0 };
+  for (let i = 0; i < srcLab.length; i += 3) { u[0] = srcLab[i]; u[1] = srcLab[i + 1]; u[2] = srcLab[i + 2]; applyLook(m, p, u); base[i] = u[0]; base[i + 1] = u[1]; base[i + 2] = u[2]; }
+  const S = swatches(base, 13, 0), R = swatches(refLab, 13, 0); // plain means: vivid ones overshoot
+  const pts = S.map(s => {
+    let best = null, bd = Infinity;
+    for (const r of R) { const d = Math.hypot((r.L - s.L) * o.pL, r.a - s.a, r.b - s.b); if (d < bd) { bd = d; best = r; } }
+    const k = Math.exp(-((bd / o.pd) ** 2));
+    return [s.L, s.a, s.b, (best.L - s.L) * o.pLm * k, (best.a - s.a) * k, (best.b - s.b) * k];
+  });
+  pts.push([0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0]);
+  return { pts, s2: 2 * o.psig * o.psig };
 }
 // Six hue sectors (red, orange/skin, yellow-green, green-cyan, blue, magenta) in each lightness zone:
 // how the reference turns each hue and how saturated it keeps it. Per zone, because a look often
@@ -352,7 +370,7 @@ function chromaQ(lab, p) {
 }
 
 // Full transfer by default. Older defaults (tone 0.82, color 0.54, sat 0.63, hue 0.69) read as "no effect".
-export const DEFAULTS = { strength: 1, tone: 1, color: 1, sat: 1, hue: 1, skin: 0.55, temp: 0, tint: 0, saturation: 1, contrast: 0 };
+export const DEFAULTS = { strength: 1, tone: 1, color: 1, sat: 1, hue: 1, pal: 1, skin: 0.55, temp: 0, tint: 0, saturation: 1, contrast: 0 };
 /** Same-scene references: match everything. */
 export const DEFAULTS_SCENE = { ...DEFAULTS, tone: 1, color: 1, sat: 1, hue: 0, skin: 0.3 };
 const SKIN_H = 0.95; // Oklab hue (rad) of typical skin, ~54 deg
@@ -382,6 +400,11 @@ export function applyLook(m, p, o) {
         const g = clamp(C / 0.04, 0, 1), h2 = h + dh * g, C2 = C * (1 + (ks - 1) * g);
         a = C2 * Math.cos(h2); b = C2 * Math.sin(h2);
       }
+    }
+    if (m.pal && p.pal) {
+      let W = 0.02, dL = 0, da = 0, db = 0; // the 0.02 floor: colours far from every swatch barely move
+      for (const q of m.pal.pts) { const w = Math.exp(-(((L - q[0]) * 0.5) ** 2 + (a - q[1]) ** 2 + (b - q[2]) ** 2) / m.pal.s2); W += w; dL += w * q[3]; da += w * q[4]; db += w * q[5]; }
+      L += p.pal * dL / W; a += p.pal * da / W; b += p.pal * db / W;
     }
     // Skin protection: hold skin hues near where the camera put them.
     if (p.skin > 0) {
@@ -453,7 +476,7 @@ export function applyLUT(lut, size, src, dst) {
 /** Film-still palette: up to k distinct colours, like a colour-palette card. Colours are first binned so
  * noise and specks drop out, seeded farthest-first so small accents (a yellow coat, a red light) survive,
  * then refined by weighted k-means. Ordered cool to warm, dark to light, reds last. */
-export function swatches(lab, k = 13) {
+export function swatches(lab, k = 13, vivid = 0.6) {
   const n = lab.length / 3, bins = new Map();
   for (let i = 0; i < n; i++) {
     const L = lab[i * 3], a = lab[i * 3 + 1], b = lab[i * 3 + 2];
@@ -477,19 +500,19 @@ export function swatches(lab, k = 13) {
     C = C.map((c, j) => (S[j][3] ? [S[j][0] / S[j][3], S[j][1] / S[j][3], S[j][2] / S[j][3], S[j][3]] : [...c.slice(0, 3), 0]));
   }
   const tot = pts.reduce((s, p) => s + p[3], 0);
-  // show each colour by its more vivid members, as a palette card does; a cluster mean reads muddy
+  // show each colour by its more vivid members (vivid = 0: the plain mean), as a palette card does; a cluster mean reads muddy
   const out = C.map((c, j) => {
     const m = pts.filter((p, i) => own[i] === j), ch = p => Math.hypot(p[1], p[2]);
     if (!m.length) return null;
-    const med = m.map(ch).sort((x, y) => x - y)[Math.floor(m.length * 0.6)], v = m.filter(p => ch(p) >= med);
+    const med = m.map(ch).sort((x, y) => x - y)[Math.floor(m.length * vivid)], v = m.filter(p => ch(p) >= med);
     const w = v.reduce((s, p) => s + p[3], 0), f = q => v.reduce((s, p) => s + p[q] * p[3], 0) / w;
     return { L: f(0), a: f(1) / 3, b: f(2) / 3, share: c[3] / tot };
   }).filter(c => c && c.share >= 0.008);
   // accents: a small vivid colour far from every swatch (a red light, a yellow sign) gets its own swatch
-  const vivid = [...bins.values()].filter(v => v[3] >= n * 0.0003).map(v => [v[0] / v[3], v[1] / v[3], v[2] / v[3], v[3]]).filter(p => Math.hypot(p[1], p[2]) > 0.2);
-  for (let t = 0; t < 2 && vivid.length; t++) {
+  const acc = [...bins.values()].filter(v => v[3] >= n * 0.0003).map(v => [v[0] / v[3], v[1] / v[3], v[2] / v[3], v[3]]).filter(p => Math.hypot(p[1], p[2]) > 0.2);
+  for (let t = 0; t < 2 && acc.length; t++) {
     let best = null, bd = 0.012;
-    for (const p of vivid) { const d = Math.min(...out.map(c => d2(p, [c.L, c.a * 3, c.b * 3]))); if (d > bd) { bd = d; best = p; } }
+    for (const p of acc) { const d = Math.min(...out.map(c => d2(p, [c.L, c.a * 3, c.b * 3]))); if (d > bd) { bd = d; best = p; } }
     if (!best) break;
     out.push({ L: best[0], a: best[1] / 3, b: best[2] / 3, share: best[3] / tot });
   }
