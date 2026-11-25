@@ -1,5 +1,5 @@
 // Offline cache: the app shell is tiny, so cache it whole and serve cache-first, refreshing in the background.
-const CACHE = 'copycat-v4';
+const CACHE = 'copycat-v5';
 const FILES = ['./', './index.html', './engine.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));

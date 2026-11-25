@@ -13,13 +13,18 @@ Open: https://jaegu504.github.io/copycat-lut/ (works on phones; add it to the ho
 Real Sony A7S III / FX3 S-Log3 footage (8 frames, different scenes) and 24 real colorist LOG LUTs.
 A LUT grades shot A to make the reference; the ground truth is the same LUT on shot B; CopyCat only sees
 shot B and the reference. Score: mean Oklab distance x100 to the ground truth (about 2 is barely visible).
-Grade mode transfers the look at full strength by default. Its tints come only from near-neutral pixels
-(greys, whites), so coloured objects in the reference are not mistaken for a colour cast.
+Grade mode is tuned to look like the reference by eye: full saturation and hue transfer, hues mapped per
+lightness zone (a look that turns bright greens yellow and dark greens teal keeps that split), tints from
+mostly neutral pixels, and the midtones moved up to 0.2 toward the reference. Whites barely drop, so a
+reference without bright objects does not turn white shirts grey.
+
+The cost: when a reference is darker only because of what is in it, the mid shift copies that darkness.
+On the held-out colorist-LUT test below that scores worse than no grade; the "Kecerahan & kontras referensi" slider at 50% brings
+it back (6.82).
 
 | Reference shows | No grade (CST only) | Scene mode | Grade mode (default) |
 | --- | --- | --- | --- |
-| A different scene (held-out LUTs) | 7.55 | 17.48 | 5.77 |
-| The same scene | 6.77 | 1.07 | 2.84 |
+| A different scene (held-out LUTs) | 7.55 | 17.48 | 9.52 (6.82 with that slider at 50%) |
 
 Pick "Adegan sama" only when the reference is the same location and light; otherwise keep "Adegan lain".
 The S-Log3 conversion lands within 2.7 of Sony's official S-Log3/S-Gamut3.Cine to Rec.709 LUT.

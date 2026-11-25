@@ -275,7 +275,9 @@ function mkl(Cs, Cr, lo = 0.4, hi = 2.2) {
  *  the tint carried by near-neutral colours in shadows / mids / highlights, and overall saturation, so
  *  the content of the reference (an orange wall, a green forest) does not leak into the footage.
  *  'scene' matches the full distributions; use it only when both pictures show the same kind of scene. */
-export const MATCH = { bk: 0.04, wk: 0.094, mid: 0.8, cpow: 0.724, sig: 0.015, spow: 0.4, smin: 0.6, tint: 0.08, hmax: 0.2, hpow: 0.717 };
+// Tuned to look like the reference (users judge by eye), not only to the colorist-LUT bench:
+// the mid shift (mclip) costs bench score when the reference is darker by content; lower `tone` for that.
+export const MATCH = { bk: 0.04, wk: 0.094, wdn: 0.02, mid: 1, mclip: 0.2, cpow: 0.724, cmax: 1.4, sig: 0.03, spow: 1, smin: 0.5, smax: 1.8, tint: 0.2, hmax: 0.4, hpow: 1 };
 export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   if (mode === 'scene') {
     const T = toneTable(srcLab, refLab);
@@ -288,7 +290,8 @@ export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
     return { T, mS, mR, A };
   }
   const ps = [0.01, 0.25, 0.5, 0.75, 0.99], s = quantiles(srcLab, ps), r = quantiles(refLab, ps);
-  const b = s[0] + clamp(r[0] - s[0], -o.bk, o.bk), w = s[4] + clamp(r[4] - s[4], -o.wk, o.wk);
+  // whites barely drop: a reference without bright objects says little about where white sits
+  const b = s[0] + clamp(r[0] - s[0], -o.bk, o.bk), w = s[4] + clamp(r[4] - s[4], -(o.wdn ?? o.wk), o.wk);
   const m = s[2] + clamp(r[2] - s[2], -(o.mclip ?? 0.1), o.mclip ?? 0.1) * o.mid;
   const c = clamp(Math.pow((r[3] - r[1]) / (s[3] - s[1] + 1e-4), o.cpow), o.cmin ?? 0.8, o.cmax ?? 1.25);
   const q1 = Math.max(b + 0.01, m - (s[2] - s[1]) * c), q3 = Math.min(w - 0.01, m + (s[3] - s[2]) * c);
@@ -299,30 +302,34 @@ export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   // the reference's tint relative to the footage's, capped: a grade tints, it does not repaint
   const mR = nR.map((z, k) => { const da = z.a - nS[k].a, db = z.b - nS[k].b, h = Math.hypot(da, db), k2 = h > o.tint ? o.tint / h : 1; return { a: nS[k].a + da * k2, b: nS[k].b + db * k2, n: z.n }; });
   const sat = clamp(Math.pow((chromaQ(refLab, 0.75) + 1e-3) / (chromaQ(srcLab, 0.75) + 1e-3), o.spow), o.smin ?? 0.7, o.smax ?? 1.3);
-  return { T, mS: nS, mR, A: [sat, 0, sat], hue: hueSectors(srcLab, refLab, o) };
+  return { T, mS: nS, mR, A: [sat, 0, sat], hue: hueSectors(srcLab, refLab, mapL, o) };
 }
-// Six hue sectors (red, orange/skin, yellow-green, green-cyan, blue, magenta): how the reference turns
-// each hue and how saturated it keeps it, from chroma-weighted means of the pixels in that sector.
+// Six hue sectors (red, orange/skin, yellow-green, green-cyan, blue, magenta) in each lightness zone:
+// how the reference turns each hue and how saturated it keeps it. Per zone, because a look often
+// split-tones a hue (bright greens yellow, dark greens teal); one global mean per hue blurs that.
 const SECT = 6;
-function sectorStats(lab) {
-  const st = Array.from({ length: SECT }, () => ({ x: 0, y: 0, c: 0, n: 0 }));
+function sectorStats(lab, mapL) {
+  const row = () => Array.from({ length: SECT }, () => ({ x: 0, y: 0, c: 0, n: 0 }));
+  const st = [row(), row(), row(), row()], w = [0, 0, 0]; // zones 0..2, then all pixels
   for (let i = 0; i < lab.length; i += 3) {
     const a = lab[i + 1], b = lab[i + 2], C = Math.hypot(a, b);
     if (C < 0.03 || lab[i] < 0.08 || lab[i] > 0.97) continue;
-    const h = (Math.atan2(b, a) + 2 * Math.PI) % (2 * Math.PI), k = Math.floor(h / (2 * Math.PI) * SECT) % SECT, z = st[k];
-    z.x += a; z.y += b; z.c += C; z.n++;
+    const h = (Math.atan2(b, a) + 2 * Math.PI) % (2 * Math.PI), k = Math.floor(h / (2 * Math.PI) * SECT) % SECT;
+    zoneW(mapL ? mapL(lab[i]) : lab[i], w);
+    for (let z = 0; z < 4; z++) { const q = z < 3 ? w[z] : 1, c = st[z][k]; c.x += q * a; c.y += q * b; c.c += q * C; c.n += q; }
   }
   const tot = lab.length / 3;
-  return st.map(z => z.n > tot * 0.01 ? { h: Math.atan2(z.y, z.x), c: z.c / z.n, w: Math.min(1, z.n / (tot * 0.05)) } : null);
+  return st.map(r => r.map(z => z.n > tot * 0.01 ? { h: Math.atan2(z.y, z.x), c: z.c / z.n, w: Math.min(1, z.n / (tot * 0.05)) } : null));
 }
-function hueSectors(srcLab, refLab, o) {
-  const S = sectorStats(srcLab), R = sectorStats(refLab);
-  return S.map((s, k) => {
-    const r = R[k];
-    if (!s || !r) return { dh: 0, ks: 1 };
+function hueSectors(srcLab, refLab, mapL, o) {
+  const S = sectorStats(srcLab, mapL), R = sectorStats(refLab, null);
+  const cell = (s, r) => {
     const dh = Math.atan2(Math.sin(r.h - s.h), Math.cos(r.h - s.h)), w = Math.min(s.w, r.w);
     return { dh: clamp(dh, -o.hmax, o.hmax) * w, ks: 1 + (clamp(Math.pow(r.c / s.c, o.hpow), 0.6, 1.5) - 1) * w };
-  });
+  };
+  const all = S[3].map((s, k) => (s && R[3][k] ? cell(s, R[3][k]) : { dh: 0, ks: 1 }));
+  // a zone either image lacks for this hue falls back to the all-pixel sector
+  return [0, 1, 2].map(z => S[z].map((s, k) => (s && R[z][k] ? cell(s, R[z][k]) : all[k])));
 }
 function neutralStats(lab, mapL, sig) {
   const sum = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], w = [0, 0, 0];
@@ -369,7 +376,9 @@ export function applyLook(m, p, o) {
       if (C > 1e-5) {
         const h = (Math.atan2(b, a) + 2 * Math.PI) % (2 * Math.PI), f = h / (2 * Math.PI) * SECT - 0.5;
         const k0 = ((Math.floor(f) % SECT) + SECT) % SECT, k1 = (k0 + 1) % SECT, t = f - Math.floor(f);
-        const dh = (m.hue[k0].dh * (1 - t) + m.hue[k1].dh * t) * p.hue, ks = 1 + ((m.hue[k0].ks * (1 - t) + m.hue[k1].ks * t) - 1) * p.hue;
+        let dh = 0, ks = 0;
+        for (let z = 0; z < 3; z++) { const H = m.hue[z]; dh += w[z] * (H[k0].dh * (1 - t) + H[k1].dh * t); ks += w[z] * (H[k0].ks * (1 - t) + H[k1].ks * t); }
+        dh *= p.hue; ks = 1 + (ks - 1) * p.hue;
         const g = clamp(C / 0.04, 0, 1), h2 = h + dh * g, C2 = C * (1 + (ks - 1) * g);
         a = C2 * Math.cos(h2); b = C2 * Math.sin(h2);
       }
