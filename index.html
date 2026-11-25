@@ -111,8 +111,10 @@ details .knobs { display: grid; gap: 6px; }
 .panel h3 { margin: 0; font: 600 12px/1 var(--body); text-transform: uppercase; letter-spacing: .08em; color: var(--mute); display: flex; justify-content: space-between; gap: 8px; }
 .panel h3 em { font: 400 11px/1 var(--mono); font-style: normal; text-transform: none; letter-spacing: 0; color: var(--faint); }
 .panel canvas.ref { width: 100%; height: auto; border-radius: 6px; background: var(--well); display: block; }
-.pal { display: flex; height: 34px; border-radius: 6px; overflow: hidden; }
-.pal i { display: block; height: 100%; }
+.pal { display: flex; gap: 2px; height: 34px; border-radius: 6px; overflow: hidden; }
+.pal i { display: block; height: 100%; flex: 1; cursor: copy; }
+.pal-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.pal-btns .btn { padding: 7px 10px; font-size: 12.5px; }
 .pal-l { font: 400 11px/1 var(--mono); color: var(--faint); }
 canvas.scope { width: 100%; aspect-ratio: 1; max-width: 100%; border-radius: 50%; background: var(--well); display: block; }
 .legend { display: flex; gap: 12px; font-size: 11.5px; color: var(--mute); flex-wrap: wrap; }
@@ -241,6 +243,10 @@ code { font: 12px var(--mono); background: var(--well); padding: 1px 4px; border
         <span class="pal-l">Referensi</span><div class="pal" id="palRef"></div>
         <span class="pal-l">Hasil</span><div class="pal" id="palOut"></div>
         <span class="pal-l">Footage setelah CST</span><div class="pal" id="palCst"></div>
+        <div class="pal-btns">
+          <button class="btn" id="cardRef" type="button">Simpan kartu palet referensi</button>
+          <button class="btn" id="cardOut" type="button">Simpan kartu palet hasil</button>
+        </div>
       </div>
       <div class="panel vs">
         <h3>Vectorscope <em>Oklab a·b</em></h3>
@@ -404,8 +410,8 @@ function analyse() {
   refLab = E.toLab(state.refSmall.data, 4);
   state.match = E.buildMatch(cstLab, refLab, state.matchMode);
   state.lutCst = E.bakeLUT(state.cst, 33);
-  paintPalette('palRef', E.palette(refLab));
-  paintPalette('palCst', E.palette(cstLab));
+  state.palRef = E.swatches(refLab); paintPalette('palRef', state.palRef);
+  paintPalette('palCst', E.swatches(cstLab));
   drawRef();
   schedule();
 }
@@ -425,7 +431,7 @@ function render() {
   paintView();
   const small = E.applyLUT(state.lutLook, 33, state.footSmall.data, new Uint8ClampedArray(state.footSmall.data.length));
   const outLab = E.toLab(small, 4);
-  paintPalette('palOut', E.palette(outLab));
+  state.palOut = E.swatches(outLab); paintPalette('palOut', state.palOut);
   drawScope(outLab);
   $('readout').textContent = `${f.width}×${f.height} · ${E.PROFILES[state.profile].name.split(' /')[0]} · ${Math.round(performance.now() - t0)} ms`;
 }
@@ -446,8 +452,41 @@ function paintView() {
 }
 function paintPalette(id, pal) {
   const el = $(id); el.replaceChildren();
-  pal.forEach(c => { const i = document.createElement('i'); i.style.background = E.labToCss(c); i.style.flex = String(c.share); i.title = E.labToCss(c); el.append(i); });
+  pal.forEach(c => { const i = document.createElement('i'), hex = toHex(c); i.style.background = hex; i.title = hex; el.append(i); });
 }
+const toHex = c => '#' + E.labToCss(c).match(/\d+/g).slice(0, 3).map(v => (+v).toString(16).padStart(2, '0')).join('');
+// Copy a swatch's hex on click.
+for (const id of ['palRef', 'palOut', 'palCst']) $(id).addEventListener('click', async e => {
+  if (e.target.tagName !== 'I') return;
+  try { await navigator.clipboard.writeText(e.target.title); say(`Warna ${e.target.title} tersalin.`); } catch { say(e.target.title); }
+});
+/** Film palette card: the frame, then a row of equal swatches under it, on white. */
+function paletteCard(img, pal) {
+  const W = Math.min(1600, img.width), H = Math.round(img.height * W / img.width), g = Math.max(2, Math.round(W / 300)), sh = Math.round(W * 0.15);
+  const c = canvasOf(W, H + g + sh), x = c.getContext('2d'), src = canvasOf(img.width, img.height);
+  src.getContext('2d').putImageData(img, 0, 0);
+  x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+  x.imageSmoothingQuality = 'high'; x.drawImage(src, 0, 0, W, H);
+  const sw = (W - g * (pal.length - 1)) / pal.length;
+  pal.forEach((p, i) => { x.fillStyle = toHex(p); x.fillRect(Math.round(i * (sw + g)), H + g, Math.round((i + 1) * (sw + g) - g) - Math.round(i * (sw + g)), sh); });
+  return c;
+}
+async function saveCard(img, pal, label) {
+  if (!img || !pal?.length) return;
+  const name = `${($('lutName').value.trim() || 'CopyCat Look').replace(/[\\/:*?"<>|]/g, '')} - palet ${label}.png`;
+  const blob = await new Promise(r => paletteCard(img, pal).toBlob(r, 'image/png'));
+  if (downloads) {
+    try { await downloads.save({ filename: name, data: blob }); say(`Tersimpan: ${name}`); }
+    catch (e) { say(e?.code === 'declined' ? 'Unduhan dibatalkan.' : 'Unduhan tidak bisa di sini.', true); }
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  say(`Diunduh: ${name}`);
+}
+$('cardRef').addEventListener('click', () => saveCard(state.ref, state.palRef, 'referensi'));
+$('cardOut').addEventListener('click', () => saveCard(outLook, state.palOut, 'hasil'));
 function drawRef() {
   const c = $('refView'), img = state.ref;
   c.width = img.width; c.height = img.height;

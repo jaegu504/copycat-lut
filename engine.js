@@ -450,24 +450,51 @@ export function applyLUT(lut, size, src, dst) {
   return dst;
 }
 
-/** k-means palette in Oklab: [{L,a,b,share}] sorted dark to light. */
-export function palette(lab, k = 6, iters = 12) {
-  const n = lab.length / 3, step = Math.max(1, Math.floor(n / 4000)), pts = [];
-  for (let i = 0; i < n; i += step) pts.push([lab[i * 3], lab[i * 3 + 1] * 2, lab[i * 3 + 2] * 2]);
-  pts.sort((p, q) => p[0] - q[0]);
-  let C = Array.from({ length: k }, (_, j) => pts[Math.floor((j + 0.5) / k * pts.length)].slice());
-  const lab2 = new Int32Array(pts.length);
-  for (let it = 0; it < iters; it++) {
-    const S = C.map(() => [0, 0, 0, 0]);
-    pts.forEach((p, i) => {
-      let best = 0, bd = Infinity;
-      C.forEach((c, j) => { const d = (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2; if (d < bd) { bd = d; best = j; } });
-      lab2[i] = best; const s = S[best]; s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; s[3]++;
-    });
-    C = C.map((c, j) => S[j][3] ? [S[j][0] / S[j][3], S[j][1] / S[j][3], S[j][2] / S[j][3]] : c);
+/** Film-still palette: up to k distinct colours, like a colour-palette card. Colours are first binned so
+ * noise and specks drop out, seeded farthest-first so small accents (a yellow coat, a red light) survive,
+ * then refined by weighted k-means. Ordered cool to warm, dark to light, reds last. */
+export function swatches(lab, k = 13) {
+  const n = lab.length / 3, bins = new Map();
+  for (let i = 0; i < n; i++) {
+    const L = lab[i * 3], a = lab[i * 3 + 1], b = lab[i * 3 + 2];
+    const key = Math.round(L * 20) + ',' + Math.round(a * 40) + ',' + Math.round(b * 40);
+    let v = bins.get(key); if (!v) bins.set(key, v = [0, 0, 0, 0]);
+    v[0] += L; v[1] += a * 3; v[2] += b * 3; v[3]++; // chroma counts 3x: a palette is about hue, not grey steps
   }
-  const cnt = C.map(() => 0); lab2.forEach(j => cnt[j]++);
-  return C.map((c, j) => ({ L: c[0], a: c[1] / 2, b: c[2] / 2, share: cnt[j] / pts.length })).filter(c => c.share > 0.01).sort((p, q) => p.L - q.L);
+  const pts = [...bins.values()].filter(v => v[3] >= n * 0.002).map(v => [v[0] / v[3], v[1] / v[3], v[2] / v[3], v[3]]);
+  if (!pts.length) return [];
+  const d2 = (p, c) => (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2;
+  let C = [pts.reduce((m, p) => (p[3] > m[3] ? p : m)).slice(0, 3)];
+  while (C.length < Math.min(k - 2, pts.length)) { // two slots kept for accents
+    let best = null, bd = -1;
+    for (const p of pts) { const d = Math.min(...C.map(c => d2(p, c))) * Math.sqrt(p[3]); if (d > bd) { bd = d; best = p; } }
+    C.push(best.slice(0, 3));
+  }
+  let own = new Int32Array(pts.length);
+  for (let it = 0; it < 15; it++) {
+    const S = C.map(() => [0, 0, 0, 0]);
+    pts.forEach((p, i) => { let j = 0, bd = Infinity; C.forEach((c, q) => { const d = d2(p, c); if (d < bd) { bd = d; j = q; } }); own[i] = j; const s = S[j]; s[0] += p[0] * p[3]; s[1] += p[1] * p[3]; s[2] += p[2] * p[3]; s[3] += p[3]; });
+    C = C.map((c, j) => (S[j][3] ? [S[j][0] / S[j][3], S[j][1] / S[j][3], S[j][2] / S[j][3], S[j][3]] : [...c.slice(0, 3), 0]));
+  }
+  const tot = pts.reduce((s, p) => s + p[3], 0);
+  // show each colour by its more vivid members, as a palette card does; a cluster mean reads muddy
+  const out = C.map((c, j) => {
+    const m = pts.filter((p, i) => own[i] === j), ch = p => Math.hypot(p[1], p[2]);
+    if (!m.length) return null;
+    const med = m.map(ch).sort((x, y) => x - y)[Math.floor(m.length * 0.6)], v = m.filter(p => ch(p) >= med);
+    const w = v.reduce((s, p) => s + p[3], 0), f = q => v.reduce((s, p) => s + p[q] * p[3], 0) / w;
+    return { L: f(0), a: f(1) / 3, b: f(2) / 3, share: c[3] / tot };
+  }).filter(c => c && c.share >= 0.008);
+  // accents: a small vivid colour far from every swatch (a red light, a yellow sign) gets its own swatch
+  const vivid = [...bins.values()].filter(v => v[3] >= n * 0.0003).map(v => [v[0] / v[3], v[1] / v[3], v[2] / v[3], v[3]]).filter(p => Math.hypot(p[1], p[2]) > 0.2);
+  for (let t = 0; t < 2 && vivid.length; t++) {
+    let best = null, bd = 0.012;
+    for (const p of vivid) { const d = Math.min(...out.map(c => d2(p, [c.L, c.a * 3, c.b * 3]))); if (d > bd) { bd = d; best = p; } }
+    if (!best) break;
+    out.push({ L: best[0], a: best[1] / 3, b: best[2] / 3, share: best[3] / tot });
+  }
+  const rank = c => { const h = (Math.atan2(c.b, c.a) * 180 / Math.PI + 360) % 360, C2 = Math.hypot(c.a, c.b); return C2 > 0.03 && (h < 40 || h > 330) ? 2 : h >= 95 && h < 290 ? 0 : 1; };
+  return out.sort((p, q) => rank(p) - rank(q) || p.L - q.L).slice(0, k);
 }
 export function labToCss({ L, a, b }) {
   const o = oklabToLin(L, a, b, [0, 0, 0]).map(v => Math.round(linToSrgb(clamp(v, 0, 1)) * 255));
