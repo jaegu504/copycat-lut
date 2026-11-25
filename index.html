@@ -183,8 +183,8 @@ code { font: 12px var(--mono); background: var(--well); padding: 1px 4px; border
         <button type="button" data-match="scene" aria-pressed="false">Adegan sama</button>
       </div>
       <div class="seg palk" role="group" aria-label="Jumlah warna palet" id="palkWrap">
-        <button type="button" data-k="4" aria-pressed="false">4 warna (simpel)</button>
-        <button type="button" data-k="13" aria-pressed="true">13 warna (detail)</button>
+        <button type="button" data-k="4" aria-pressed="false">Simpel (versi sebelumnya)</button>
+        <button type="button" data-k="13" aria-pressed="true">Detail (13 warna)</button>
       </div>
       <p class="hint" id="modeHint"></p>
       <div class="knob"><span>Kekuatan look</span><output id="o-strength"></output><input type="range" id="strength" min="0" max="1" step="0.01"></div>
@@ -395,17 +395,17 @@ function bindKnobs() {
   document.querySelectorAll('.seg.palk button').forEach(b => b.addEventListener('click', () => {
     state.palK = +b.dataset.k;
     document.querySelectorAll('.seg.palk button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-    analyse();
+    modeHint(); analyse();
   }));
   modeHint();
 }
-// 4 colours: a broad look; wider blend so four far-apart colours still cover the picture
-const PAL = { 4: { pk: 4, psig: 0.1, pd: 0.16 }, 13: { pk: 13 } };
+// Simple: the previous system (tints per zone + hue sectors, no palette warp). Detailed: 13-colour warp.
+const PAL = { 4: { pal: 0 }, 13: { pk: 13 } };
 const modeDefaults = () => ({ ...(state.matchMode === 'scene' ? E.DEFAULTS_SCENE : E.DEFAULTS) });
 function setParams(p) { state.params = p; KNOBS.forEach(k => { $(k).value = p[k]; $('o-' + k).textContent = (fmt[k] || pct)(p[k]); }); }
 function modeHint() {
   const scene = state.matchMode === 'scene';
-  $('hueWrap').hidden = scene; $('palWrap').hidden = scene; $('palkWrap').hidden = scene;
+  $('hueWrap').hidden = scene; $('palWrap').hidden = scene || state.palK !== 13; $('palkWrap').hidden = scene;
   $('modeHint').textContent = scene
     ? 'Referensi dari adegan yang sama (shot lain di lokasi dan cahaya yang sama, atau versi yang sudah di-grade). Semua warna dan kecerahan disamakan persis.'
     : 'Referensi dari film atau foto lain. Hanya gaya grade yang diambil: hitam & putih, rona bayangan / tengah / terang, saturasi, dan rona per warna. Isi gambarnya tidak ikut.';
