@@ -104,6 +104,9 @@ const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 // Identity up to K, then an exponential shoulder with matching slope that approaches 1: mid grey stays put.
 const K = 0.3;
 const shoulder = x => x <= K ? x : K + (1 - K) * (1 - Math.exp(-(x - K) / (1 - K)));
+// Distance-to-achromatic compression: identity below THR, distance LIM lands on the gamut edge (1).
+const THR = 0.75, LIM = 1.4, PW = 1.2, RS = (LIM - THR) / Math.pow(Math.pow((1 - THR) / (LIM - THR), -PW) - 1, 1 / PW);
+const rgc = d => d < THR ? d : THR + RS * ((d - THR) / RS) / Math.pow(1 + Math.pow((d - THR) / RS, PW), 1 / PW);
 
 /** Returns (r,g,b,out) => out = Rec.709 display values, for a camera profile. */
 export function makeCST(profileId, { exposure = 0, levels = 'auto' } = {}) {
@@ -119,7 +122,11 @@ export function makeCST(profileId, { exposure = 0, levels = 'auto' } = {}) {
     let x = M[0][0] * R + M[0][1] * G + M[0][2] * B;
     let y = M[1][0] * R + M[1][1] * G + M[1][2] * B;
     let z = M[2][0] * R + M[2][1] * G + M[2][2] * B;
-    // Out-of-gamut: pull toward luminance until nothing is negative.
+    // Soft gamut compression (ACES RGC style): ease colours near the gamut edge inward so saturated
+    // highlights keep a gradient instead of a channel slamming to 0.
+    const ach = Math.max(x, y, z);
+    if (ach > 1e-9) { x = ach - ach * rgc((ach - x) / ach); y = ach - ach * rgc((ach - y) / ach); z = ach - ach * rgc((ach - z) / ach); }
+    // Anything still out of gamut: pull toward luminance until nothing is negative.
     const Y = Math.max(0, 0.2126 * x + 0.7152 * y + 0.0722 * z);
     const lo = Math.min(x, y, z);
     if (lo < 0) { const t = Y / (Y - lo + 1e-9); x = Y + (x - Y) * t; y = Y + (y - Y) * t; z = Y + (z - Y) * t; }
@@ -268,7 +275,7 @@ function mkl(Cs, Cr, lo = 0.4, hi = 2.2) {
  *  the tint carried by near-neutral colours in shadows / mids / highlights, and overall saturation, so
  *  the content of the reference (an orange wall, a green forest) does not leak into the footage.
  *  'scene' matches the full distributions; use it only when both pictures show the same kind of scene. */
-export const MATCH = { bk: 0.04, wk: 0.094, mid: 0.565, cpow: 0.724, sig: 0.051, spow: 0.128, tint: 0.08, hmax: 0.121, hpow: 0.717 };
+export const MATCH = { bk: 0.04, wk: 0.094, mid: 0.8, cpow: 0.724, sig: 0.015, spow: 0.4, smin: 0.6, tint: 0.08, hmax: 0.2, hpow: 0.717 };
 export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   if (mode === 'scene') {
     const T = toneTable(srcLab, refLab);
@@ -282,15 +289,16 @@ export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   }
   const ps = [0.01, 0.25, 0.5, 0.75, 0.99], s = quantiles(srcLab, ps), r = quantiles(refLab, ps);
   const b = s[0] + clamp(r[0] - s[0], -o.bk, o.bk), w = s[4] + clamp(r[4] - s[4], -o.wk, o.wk);
-  const m = s[2] + clamp(r[2] - s[2], -0.1, 0.1) * o.mid;
-  const c = clamp(Math.pow((r[3] - r[1]) / (s[3] - s[1] + 1e-4), o.cpow), 0.8, 1.25);
+  const m = s[2] + clamp(r[2] - s[2], -(o.mclip ?? 0.1), o.mclip ?? 0.1) * o.mid;
+  const c = clamp(Math.pow((r[3] - r[1]) / (s[3] - s[1] + 1e-4), o.cpow), o.cmin ?? 0.8, o.cmax ?? 1.25);
   const q1 = Math.max(b + 0.01, m - (s[2] - s[1]) * c), q3 = Math.min(w - 0.01, m + (s[3] - s[2]) * c);
   const T = curveFrom([[0, Math.max(0, b - s[0])], [s[0], b], [s[1], q1], [s[2], m], [s[3], q3], [s[4], w], [1, Math.min(1, w + (1 - s[4]))]], s[2]);
+  if (o.tfull) { const F = toneTable(srcLab, refLab); for (let i = 0; i < T.length; i++) T[i] += o.tfull * (F[i] - T[i]); }
   const mapL = L => lookupT(T, L);
   const nS = neutralStats(srcLab, mapL, o.sig), nR = neutralStats(refLab, null, o.sig);
   // the reference's tint relative to the footage's, capped: a grade tints, it does not repaint
   const mR = nR.map((z, k) => { const da = z.a - nS[k].a, db = z.b - nS[k].b, h = Math.hypot(da, db), k2 = h > o.tint ? o.tint / h : 1; return { a: nS[k].a + da * k2, b: nS[k].b + db * k2, n: z.n }; });
-  const sat = clamp(Math.pow((chromaQ(refLab, 0.75) + 1e-3) / (chromaQ(srcLab, 0.75) + 1e-3), o.spow), 0.7, 1.3);
+  const sat = clamp(Math.pow((chromaQ(refLab, 0.75) + 1e-3) / (chromaQ(srcLab, 0.75) + 1e-3), o.spow), o.smin ?? 0.7, o.smax ?? 1.3);
   return { T, mS: nS, mR, A: [sat, 0, sat], hue: hueSectors(srcLab, refLab, o) };
 }
 // Six hue sectors (red, orange/skin, yellow-green, green-cyan, blue, magenta): how the reference turns
@@ -336,8 +344,8 @@ function chromaQ(lab, p) {
   return c[Math.floor(p * (n - 1))];
 }
 
-// Tuned on real S-Log3 footage against 13 colorist LUTs, checked on 11 others (see README).
-export const DEFAULTS = { strength: 1, tone: 0.82, color: 0.54, sat: 0.63, hue: 0.69, skin: 0.55, temp: 0, tint: 0, saturation: 1, contrast: 0 };
+// Full transfer by default. Older defaults (tone 0.82, color 0.54, sat 0.63, hue 0.69) read as "no effect".
+export const DEFAULTS = { strength: 1, tone: 1, color: 1, sat: 1, hue: 1, skin: 0.55, temp: 0, tint: 0, saturation: 1, contrast: 0 };
 /** Same-scene references: match everything. */
 export const DEFAULTS_SCENE = { ...DEFAULTS, tone: 1, color: 1, sat: 1, hue: 0, skin: 0.3 };
 const SKIN_H = 0.95; // Oklab hue (rad) of typical skin, ~54 deg
