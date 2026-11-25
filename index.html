@@ -100,7 +100,7 @@ details .knobs { display: grid; gap: 6px; }
 .modes { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: transparent; padding: 7px 11px; cursor: pointer; color: var(--mute); font-size: 13px; }
-.seg.mode { width: 100%; } .seg.mode button { flex: 1; }
+.seg.mode, .seg.palk { width: 100%; } .seg.mode button, .seg.palk button { flex: 1; }
 .seg button[aria-pressed=true] { background: var(--fg); color: var(--accent-ink); font-weight: 600; }
 .readout { font: 500 12px/1.3 var(--mono); color: var(--mute); font-variant-numeric: tabular-nums; }
 
@@ -182,13 +182,17 @@ code { font: 12px var(--mono); background: var(--well); padding: 1px 4px; border
         <button type="button" data-match="grade" aria-pressed="true">Adegan lain</button>
         <button type="button" data-match="scene" aria-pressed="false">Adegan sama</button>
       </div>
+      <div class="seg palk" role="group" aria-label="Jumlah warna palet" id="palkWrap">
+        <button type="button" data-k="4" aria-pressed="false">4 warna (simpel)</button>
+        <button type="button" data-k="13" aria-pressed="true">13 warna (detail)</button>
+      </div>
       <p class="hint" id="modeHint"></p>
       <div class="knob"><span>Kekuatan look</span><output id="o-strength"></output><input type="range" id="strength" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Kecerahan &amp; kontras referensi</span><output id="o-tone"></output><input type="range" id="tone" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Warna per area (bayangan / tengah / terang)</span><output id="o-color"></output><input type="range" id="color" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Sebaran warna &amp; saturasi</span><output id="o-sat"></output><input type="range" id="sat" min="0" max="1" step="0.01"></div>
       <div class="knob" id="hueWrap"><span>Rona per warna (hijau, oranye, biru…)</span><output id="o-hue"></output><input type="range" id="hue" min="0" max="1" step="0.01"></div>
-      <div class="knob" id="palWrap"><span>Palet referensi (13 warna)</span><output id="o-pal"></output><input type="range" id="pal" min="0" max="1" step="0.01"></div>
+      <div class="knob" id="palWrap"><span>Palet referensi</span><output id="o-pal"></output><input type="range" id="pal" min="0" max="1" step="0.01"></div>
       <div class="knob"><span>Lindungi warna kulit</span><output id="o-skin"></output><input type="range" id="skin" min="0" max="1" step="0.01"></div>
       <details>
         <summary>Penyesuaian akhir</summary>
@@ -277,7 +281,7 @@ const PREVIEW_W = Math.min(1280, Math.round(Math.min(screen.width, screen.height
 const state = {
   foot: null, footSmall: null, ref: null, refSmall: null,
   profile: 'slog3c', levels: 'auto', exposure: 0,
-  params: { ...E.DEFAULTS }, matchMode: 'grade', mode: 'split', splitX: 0.5,
+  params: { ...E.DEFAULTS }, matchMode: 'grade', palK: 13, mode: 'split', splitX: 0.5,
   match: null, cst: null, lutCst: null, lutLook: null,
   demo: true,
 };
@@ -388,13 +392,20 @@ function bindKnobs() {
     setParams({ ...modeDefaults(), ...keep });
     modeHint(); analyse();
   }));
+  document.querySelectorAll('.seg.palk button').forEach(b => b.addEventListener('click', () => {
+    state.palK = +b.dataset.k;
+    document.querySelectorAll('.seg.palk button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    analyse();
+  }));
   modeHint();
 }
+// 4 colours: a broad look; wider blend so four far-apart colours still cover the picture
+const PAL = { 4: { pk: 4, psig: 0.1, pd: 0.16 }, 13: { pk: 13 } };
 const modeDefaults = () => ({ ...(state.matchMode === 'scene' ? E.DEFAULTS_SCENE : E.DEFAULTS) });
 function setParams(p) { state.params = p; KNOBS.forEach(k => { $(k).value = p[k]; $('o-' + k).textContent = (fmt[k] || pct)(p[k]); }); }
 function modeHint() {
   const scene = state.matchMode === 'scene';
-  $('hueWrap').hidden = scene; $('palWrap').hidden = scene;
+  $('hueWrap').hidden = scene; $('palWrap').hidden = scene; $('palkWrap').hidden = scene;
   $('modeHint').textContent = scene
     ? 'Referensi dari adegan yang sama (shot lain di lokasi dan cahaya yang sama, atau versi yang sudah di-grade). Semua warna dan kecerahan disamakan persis.'
     : 'Referensi dari film atau foto lain. Hanya gaya grade yang diambil: hitam & putih, rona bayangan / tengah / terang, saturasi, dan rona per warna. Isi gambarnya tidak ikut.';
@@ -409,10 +420,10 @@ function analyse() {
   $('lvFound').textContent = found ? `Data levels terdeteksi: ${found === 'full' ? 'Full' : 'Video (legal)'}. Kalau warnanya terlihat salah, pilih manual.` : '';
   cstLab = E.toLab(state.footSmall.data, 4, state.cst);
   refLab = E.toLab(state.refSmall.data, 4);
-  state.match = E.buildMatch(cstLab, refLab, state.matchMode);
+  state.match = E.buildMatch(cstLab, refLab, state.matchMode, { ...E.MATCH, ...PAL[state.palK] });
   state.lutCst = E.bakeLUT(state.cst, 33);
-  state.palRef = E.swatches(refLab); paintPalette('palRef', state.palRef);
-  paintPalette('palCst', E.swatches(cstLab));
+  state.palRef = E.swatches(refLab, state.palK); paintPalette('palRef', state.palRef);
+  paintPalette('palCst', E.swatches(cstLab, state.palK));
   drawRef();
   schedule();
 }
@@ -432,7 +443,7 @@ function render() {
   paintView();
   const small = E.applyLUT(state.lutLook, 33, state.footSmall.data, new Uint8ClampedArray(state.footSmall.data.length));
   const outLab = E.toLab(small, 4);
-  state.palOut = E.swatches(outLab); paintPalette('palOut', state.palOut);
+  state.palOut = E.swatches(outLab, state.palK); paintPalette('palOut', state.palOut);
   drawScope(outLab);
   $('readout').textContent = `${f.width}×${f.height} · ${E.PROFILES[state.profile].name.split(' /')[0]} · ${Math.round(performance.now() - t0)} ms`;
 }

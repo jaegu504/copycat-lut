@@ -277,7 +277,7 @@ function mkl(Cs, Cr, lo = 0.4, hi = 2.2) {
  *  'scene' matches the full distributions; use it only when both pictures show the same kind of scene. */
 // Tuned to look like the reference (users judge by eye), not only to the colorist-LUT bench:
 // the mid shift (mclip) costs bench score when the reference is darker by content; lower `tone` for that.
-export const MATCH = { bk: 0.04, wk: 0.094, wdn: 0.02, mid: 1, mclip: 0.2, cpow: 0.724, cmax: 1.4, sig: 0.03, spow: 1, smin: 0.5, smax: 1.8, tint: 0.2, hmax: 0.4, hpow: 1, pal: 1, pL: 0.5, pLm: 0.3, pd: 0.12, psig: 0.05 };
+export const MATCH = { bk: 0.04, wk: 0.094, wdn: 0.02, mid: 1, mclip: 0.2, cpow: 0.724, cmax: 1.4, sig: 0.03, spow: 1, smin: 0.5, smax: 1.8, tint: 0.2, hmax: 0.4, hpow: 1, pal: 1, pk: 13, pL: 0.5, pLm: 0.3, pd: 0.12, psig: 0.05 };
 export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   if (mode === 'scene') {
     const T = toneTable(srcLab, refLab);
@@ -306,13 +306,13 @@ export function buildMatch(srcLab, refLab, mode = 'grade', o = MATCH) {
   if (o.pal) look.pal = paletteWarp(srcLab, refLab, look, o);
   return look;
 }
-// Palette warp: after the base look, the footage's palette (up to 13 colours) is paired with the
+// Palette warp: after the base look, the footage's palette (o.pk colours: 4 broad or 13 detailed) is paired with the
 // reference's, and each footage colour moves toward its partner. Pairs that are far apart move less,
 // so a colour the reference does not have is nudged, not repainted. Black and white stay put.
 function paletteWarp(srcLab, refLab, m, o) {
   const base = new Float32Array(srcLab.length), u = [0, 0, 0], p = { ...DEFAULTS, skin: 0, pal: 0 };
   for (let i = 0; i < srcLab.length; i += 3) { u[0] = srcLab[i]; u[1] = srcLab[i + 1]; u[2] = srcLab[i + 2]; applyLook(m, p, u); base[i] = u[0]; base[i + 1] = u[1]; base[i + 2] = u[2]; }
-  const S = swatches(base, 13, 0), R = swatches(refLab, 13, 0); // plain means: vivid ones overshoot
+  const S = swatches(base, o.pk, 0), R = swatches(refLab, o.pk, 0); // plain means: vivid ones overshoot
   const pts = S.map(s => {
     let best = null, bd = Infinity;
     for (const r of R) { const d = Math.hypot((r.L - s.L) * o.pL, r.a - s.a, r.b - s.b); if (d < bd) { bd = d; best = r; } }
@@ -488,7 +488,8 @@ export function swatches(lab, k = 13, vivid = 0.6) {
   if (!pts.length) return [];
   const d2 = (p, c) => (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2;
   let C = [pts.reduce((m, p) => (p[3] > m[3] ? p : m)).slice(0, 3)];
-  while (C.length < Math.min(k - 2, pts.length)) { // two slots kept for accents
+  const nAcc = k >= 8 ? 2 : 0; // a short palette has no room for accents
+  while (C.length < Math.min(k - nAcc, pts.length)) {
     let best = null, bd = -1;
     for (const p of pts) { const d = Math.min(...C.map(c => d2(p, c))) * Math.sqrt(p[3]); if (d > bd) { bd = d; best = p; } }
     C.push(best.slice(0, 3));
@@ -510,7 +511,7 @@ export function swatches(lab, k = 13, vivid = 0.6) {
   }).filter(c => c && c.share >= 0.008);
   // accents: a small vivid colour far from every swatch (a red light, a yellow sign) gets its own swatch
   const acc = [...bins.values()].filter(v => v[3] >= n * 0.0003).map(v => [v[0] / v[3], v[1] / v[3], v[2] / v[3], v[3]]).filter(p => Math.hypot(p[1], p[2]) > 0.2);
-  for (let t = 0; t < 2 && acc.length; t++) {
+  for (let t = 0; t < nAcc && acc.length; t++) {
     let best = null, bd = 0.012;
     for (const p of acc) { const d = Math.min(...out.map(c => d2(p, [c.L, c.a * 3, c.b * 3]))); if (d > bd) { bd = d; best = p; } }
     if (!best) break;
