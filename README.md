@@ -17,8 +17,10 @@ Defaults were tuned on 13 LUTs and checked on 11 others.
 
 | Reference shows | No grade (CST only) | Scene mode | Grade mode (default) |
 | --- | --- | --- | --- |
-| A different scene (held-out LUTs) | 7.39 | 13.04 | 5.60 |
-| The same scene | 6.74 | 1.09 | 3.41 |
+| A different scene (held-out LUTs) | 7.56 | 13.91 | 5.70 |
+| The same scene | 6.78 | 1.06 | 3.90 |
 
 Pick "Adegan sama" only when the reference is the same location and light; otherwise keep "Adegan lain".
-The S-Log3 conversion lands within 3.0 of Sony's official S-Log3/S-Gamut3.Cine to Rec.709 LUT.
+The S-Log3 conversion lands within 2.7 of Sony's official S-Log3/S-Gamut3.Cine to Rec.709 LUT.
+Highlights roll off per channel, like a camera LUT, so codec colour noise in near-white areas (shirts, sky)
+stays as small as in Sony's LUT instead of turning into colour blotches.

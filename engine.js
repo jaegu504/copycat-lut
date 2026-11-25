@@ -123,8 +123,10 @@ export function makeCST(profileId, { exposure = 0, levels = 'auto' } = {}) {
     const Y = Math.max(0, 0.2126 * x + 0.7152 * y + 0.0722 * z);
     const lo = Math.min(x, y, z);
     if (lo < 0) { const t = Y / (Y - lo + 1e-9); x = Y + (x - Y) * t; y = Y + (y - Y) * t; z = Y + (z - Y) * t; }
-    const m = Math.max(x, y, z, 1e-9), s = shoulder(m) / m;
-    o[0] = clamp(oetf709(x * s), 0, 1); o[1] = clamp(oetf709(y * s), 0, 1); o[2] = clamp(oetf709(z * s), 0, 1);
+    // Per-channel shoulder: highlight colour fades toward white like a camera LUT does. A hue-keeping
+    // max-RGB shoulder blew codec chroma noise in near-white areas up 5-7x into colour blotches.
+    x = shoulder(x); y = shoulder(y); z = shoulder(z);
+    o[0] = clamp(oetf709(x), 0, 1); o[1] = clamp(oetf709(y), 0, 1); o[2] = clamp(oetf709(z), 0, 1);
     return o;
   };
 }
